@@ -20,6 +20,9 @@ When implementation is approved:
 - GitHub/repository slug: **`the-watchtower`**
 - Intended owner: **`Lowery-Corp`**
 - Intended visibility: **private** (assumption pending owner confirmation)
+- Required development host: **`vm-work-dev-db` over SSH**
+- Required development checkout: **`/home/lowery/the-watchtower`**
+- Local Hermes checkout `/home/lowery/projects/the-watchtower` is an administrative/reference mirror, not the implementation worktree.
 - Scope now: backend only
 - Primary language/framework: Python + FastAPI
 - Primary datastore: PostgreSQL
