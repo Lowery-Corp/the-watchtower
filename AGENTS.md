@@ -4,7 +4,7 @@
 
 This file is the primary context handoff for AI coding agents working in this repository.
 
-**Current phase: preparation only. Do not scaffold or implement the application until the owner explicitly approves the plan.**
+**Current phase: backend foundation implementation is active on `dev`. Application changes must be developed, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
 
 When implementation is approved:
 
@@ -19,7 +19,8 @@ When implementation is approved:
 - Human name: **The Watchtower**
 - GitHub/repository slug: **`the-watchtower`**
 - Intended owner: **`Lowery-Corp`**
-- Intended visibility: **private** (assumption pending owner confirmation)
+- Visibility: **private**
+- Development branch: **`dev` only**; do not push implementation commits directly to `main`.
 - Required development host: **`vm-work-dev-db` over SSH**
 - Required development checkout: **`/home/lowery/the-watchtower`**
 - Local Hermes checkout `/home/lowery/projects/the-watchtower` is an administrative/reference mirror, not the implementation worktree.
@@ -73,6 +74,36 @@ Intentional improvements over Scrappy:
 - Never track `__pycache__`, `.pyc`, local databases, `.env`, test caches, or build output.
 - Pin only direct dependencies in `pyproject.toml`; use a lock strategy selected during implementation.
 
+## Implemented foundation
+
+The current `dev` milestone includes:
+
+- FastAPI application factory under `src/watchtower/main.py`.
+- Typed `WATCHTOWER_` settings through `pydantic-settings`.
+- Versioned `/api/v1/health`, `/live`, and PostgreSQL-backed `/ready` routes.
+- Validated/generated `X-Request-ID` middleware.
+- Structured JSON logging through `structlog`.
+- Async SQLAlchemy engine, `AsyncSession` factory, and FastAPI dependency with caller-owned transactions.
+- Alembic async environment and `0001_initial_schema`, which creates PostgreSQL schema `watchtower`.
+- Docker Compose services: `db`, one-shot `migrate`, `api`, and profile-gated `test`.
+- API port `8010` on the development server; PostgreSQL is not published to the host.
+
+Exact development commands, run from `/home/lowery/the-watchtower` on `vm-work-dev-db`:
+
+```bash
+docker compose config -q
+docker compose --profile test build
+docker compose up -d db api
+docker compose run --rm test pytest -v
+docker compose run --rm test ruff check src tests alembic
+docker compose run --rm test mypy src tests
+docker compose run --rm migrate alembic current
+docker compose logs --tail 100 api
+docker compose ps
+```
+
+Alembic downgrades and volume removal are destructive operations and require explicit owner authorization. Never run `docker compose down -v` by default.
+
 ## Target application structure
 
 Agents should implement toward this structure unless the approved plan changes it:
@@ -82,7 +113,7 @@ Agents should implement toward this structure unless the approved plan changes i
 ├── AGENTS.md
 ├── pyproject.toml
 ├── Dockerfile
-├── docker-compose.yaml
+├── compose.yaml
 ├── .env.example
 ├── alembic.ini
 ├── alembic/
@@ -278,14 +309,16 @@ Use real PostgreSQL for persistence integration tests; SQLite is not an acceptab
 - Tests, lint, type checking, and container health checks pass.
 - No frontend or unapproved analytics surface is introduced.
 
-## Owner decisions still required
+## Approved defaults and remaining gates
 
-See the plan's decision gate. Do not silently finalize:
+Implementation began with the owner-approved defaults:
 
-1. Private repository visibility.
-2. Whether Kafka runs in the first deployed slice or only the outbox interface is implemented.
-3. Custom envelope vs strict CloudEvents 1.0 compatibility.
-4. HMAC as the initial webhook authentication mechanism.
-5. Passive heartbeat only vs active HTTP uptime probes.
-6. Event retention period and maximum request size.
-7. Initial deployment host and CI expectations.
+1. Private `Lowery-Corp/the-watchtower` repository.
+2. CloudEvents-inspired versioned envelopes.
+3. Per-service HMAC-SHA256 authentication with timestamp/replay protection.
+4. PostgreSQL transactional outbox before direct Kafka coupling.
+5. Passive heartbeat events before active probes.
+6. Thirty-day proposed raw-event retention and 256 KiB proposed body limit.
+7. Development on `vm-work-dev-db`, branch `dev` only.
+
+Kafka broker/client selection, public/Tailscale exposure, production deployment, retention enforcement, and active uptime probes remain separate approval or spike gates.
