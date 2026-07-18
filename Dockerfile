@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir .
 
 FROM base AS test
 RUN pip install --no-cache-dir ".[dev]"
+COPY compose.yaml ./
+COPY deploy/ ./deploy/
 COPY tests/ ./tests/
 CMD ["pytest", "-v"]
 

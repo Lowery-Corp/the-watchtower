@@ -74,9 +74,9 @@ Intentional improvements over Scrappy:
 - Never track `__pycache__`, `.pyc`, local databases, `.env`, test caches, or build output.
 - Pin only direct dependencies in `pyproject.toml`; use a lock strategy selected during implementation.
 
-## Implemented foundation
+## Implemented backend milestones
 
-The current `dev` milestone includes:
+The current `dev` branch includes:
 
 - FastAPI application factory under `src/watchtower/main.py`.
 - Typed `WATCHTOWER_` settings through `pydantic-settings`.
@@ -84,16 +84,25 @@ The current `dev` milestone includes:
 - Validated/generated `X-Request-ID` middleware.
 - Structured JSON logging through `structlog`.
 - Async SQLAlchemy engine, `AsyncSession` factory, and FastAPI dependency with caller-owned transactions.
-- Alembic async environment and `0001_initial_schema`, which creates PostgreSQL schema `watchtower`.
-- Docker Compose services: `db`, one-shot `migrate`, `api`, and profile-gated `test`.
-- API port `8010` on the development server; PostgreSQL is not published to the host.
+- Alembic async environment and revisions:
+  - `0001_initial_schema`: creates PostgreSQL schema `watchtower`.
+  - `0002_monitored_service`: creates source identity/key metadata without storing signing secrets.
+  - `0003_event_outbox`: creates immutable JSONB events and Kafka-ready transactional outbox rows.
+  - `0004_outbox_integrity`: enforces event/service identity consistency for every outbox row.
+- Authenticated `POST /api/v1/webhooks/events` using per-service HMAC-SHA256, signed timestamps, constant-time comparison, source binding, and a 256 KiB default body limit.
+- Webhook abuse controls at both boundaries: per-service application budgets and per-IP Nginx edge limits.
+- Idempotency by monitored service plus source event UUID; duplicate retries return the original canonical event and create no additional outbox row.
+- Service-owned event/outbox transactions; repositories never commit.
+- Host port `8010` terminates at the non-root Nginx proxy; FastAPI and PostgreSQL are not published to the host.
+
+Signing secrets are supplied only through deployment configuration (`WATCHTOWER_WEBHOOK_SECRETS`) and are never stored in PostgreSQL or Git. Kafka client selection and outbox publication remain gated on a real broker spike.
 
 Exact development commands, run from `/home/lowery/the-watchtower` on `vm-work-dev-db`:
 
 ```bash
 docker compose config -q
 docker compose --profile test build
-docker compose up -d db api
+docker compose up -d db proxy
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests

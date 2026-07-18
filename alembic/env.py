@@ -5,11 +5,11 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from watchtower.db.base import Base
+from watchtower import models as watchtower_models
 
 config = context.config
 if config.config_file_name is not None:
@@ -19,7 +19,20 @@ config.set_main_option(
     "sqlalchemy.url",
     os.environ.get("WATCHTOWER_DATABASE_URL", config.get_main_option("sqlalchemy.url")),
 )
-target_metadata = Base.metadata
+target_metadata = watchtower_models.MonitoredService.metadata
+
+
+def include_object(
+    object_: object,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to: object | None,
+) -> bool:
+    """Exclude Alembic's public bookkeeping table from schema drift checks."""
+
+    del object_, reflected, compare_to
+    return not (type_ == "table" and name == "alembic_version")
 
 
 def run_migrations_offline() -> None:
@@ -31,6 +44,8 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_schemas=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -39,7 +54,16 @@ def run_migrations_offline() -> None:
 def run_sync_migrations(connection: Connection) -> None:
     """Configure Alembic on an async engine's sync connection."""
 
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    connection.execute(text("SET search_path TO public"))
+    connection.commit()
+    connection.dialect.default_schema_name = "public"
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        compare_type=True,
+        include_schemas=True,
+        include_object=include_object,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
