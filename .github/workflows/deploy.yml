@@ -72,7 +72,7 @@ jobs:
       - name: Deploy on server over Tailscale
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SERVER_HOST }}
+          host: "100.101.118.49"
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: 22
