@@ -146,14 +146,13 @@ docker compose run --rm migrate alembic history
 
 Migration downgrades can remove database objects. Obtain explicit authorization and verify backups/scope before running them outside an empty development database.
 
-## Automated development deployment
+## Automated deployment
 
-`.github/workflows/deploy.yml` validates and deploys every pushed `dev` commit, and also supports manual `workflow_dispatch`. The `build and deploy` GitHub environment must provide these existing secrets:
+`.github/workflows/deploy.yml` follows the same single-job structure as Scrappy and runs on pushes to `main`. The `build and deploy` GitHub environment must provide:
 
 ```text
 DOCKERHUB_USERNAME
 DOCKERHUB_TOKEN
-WATCHTOWER_POSTGRES_PASSWORD
 TS_OAUTH_CLIENT_ID
 TS_OAUTH_SECRET
 SERVER_HOST
@@ -161,16 +160,16 @@ SERVER_USER
 SERVER_SSH_KEY
 ```
 
-The workflow runs backend and frontend tests, dependency checks, frontend lint/build/audit, and both base and deployment-overlay Compose validation before publishing commit-SHA tags. Deployment consumes the registry digests returned by BuildKit rather than mutable tags:
+Before publishing, the job validates Compose, builds the backend/frontend test images, runs the backend and frontend tests, and lints the frontend. It then publishes both `latest` and commit-SHA tags:
 
 ```text
-<dockerhub-user>/watchtower-api@sha256:<digest>
-<dockerhub-user>/watchtower-frontend@sha256:<digest>
+<dockerhub-user>/watchtower-frontend:latest
+<dockerhub-user>/watchtower-frontend:<git-sha>
+<dockerhub-user>/watchtower-api:latest
+<dockerhub-user>/watchtower-api:<git-sha>
 ```
 
-`deploy/compose.deploy.yaml` overlays those immutable image references onto `compose.yaml` and removes the development PostgreSQL host-port publication. Deployment connects through Tailscale, pins the server's SSH host fingerprint, rejects manual dispatches outside `dev`, requires the server checkout to be clean and on `dev`, verifies `origin/dev` equals the triggering SHA, and fast-forwards the checkout. It then preserves the PostgreSQL volume, ensures the database is healthy, rotates its credential, runs Alembic, updates API/frontend, recreates the proxy after upstream changes, waits for all health checks, probes readiness and `/services`, and verifies the running digest references. The first deployment may briefly recreate the database container to remove its old host-port mapping, but it does not remove the persistent volume. Failed application health restores the previous API/frontend images and recreates the proxy; database migrations must therefore remain backward-compatible with the previous application version.
-
-The server retains its ignored `.env` for runtime application configuration. Before and after the checkout fast-forward, deployment requires that file to be a regular, owner-owned `0600` file and requires each non-secret runtime setting to occur exactly once with a non-empty value. The deployment overlay independently makes those resolved values mandatory, so duplicate or empty assignments cannot fall back to Compose's local defaults. `WATCHTOWER_POSTGRES_PASSWORD` must be at least 32 URL-safe characters (`A-Z`, `a-z`, digits, `.`, `_`, `~`, or `-`) because Compose uses it in both PostgreSQL and an SQLAlchemy URL. Each deployment rotates the database role through local `psql` input without exposing the value in command arguments or logs, then atomically persists it in `.env`. The workflow uses an ephemeral Docker CLI configuration for registry login and removes it at the end of the SSH session. Do not place runtime secret values in the workflow or committed Compose files.
+After connecting through Tailscale, the job pulls the latest images, changes to `/home/<server-user>/the-watchtower`, runs the same Compose shutdown/rebuild sequence used by Scrappy, and prunes unused images. The server's ignored `.env` continues to supply Watchtower runtime configuration.
 
 ## Logs and shutdown
 
