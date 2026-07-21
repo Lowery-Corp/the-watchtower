@@ -5,6 +5,8 @@ services:
       POSTGRES_DB: ${WATCHTOWER_POSTGRES_DB:-watchtower}
       POSTGRES_USER: ${WATCHTOWER_POSTGRES_USER:-watchtower}
       POSTGRES_PASSWORD: ${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}
+    ports:
+      - "${WATCHTOWER_POSTGRES_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 2s
@@ -31,7 +33,15 @@ services:
     environment:
       WATCHTOWER_DATABASE_URL: postgresql+asyncpg://${WATCHTOWER_POSTGRES_USER:-watchtower}:${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}@db:5432/${WATCHTOWER_POSTGRES_DB:-watchtower}
       WATCHTOWER_ENVIRONMENT: ${WATCHTOWER_ENVIRONMENT:-local}
+      WATCHTOWER_AUTH_SERVICE_URL: ${WATCHTOWER_AUTH_SERVICE_URL:-http://100.97.236.10:8000}
+      WATCHTOWER_AUTH_SERVICE_TIMEOUT_SECONDS: ${WATCHTOWER_AUTH_SERVICE_TIMEOUT_SECONDS:-5}
+      WATCHTOWER_SESSION_COOKIE_NAME: ${WATCHTOWER_SESSION_COOKIE_NAME:-watchtower_session}
+      WATCHTOWER_SESSION_COOKIE_MAX_AGE_SECONDS: ${WATCHTOWER_SESSION_COOKIE_MAX_AGE_SECONDS:-3600}
+      WATCHTOWER_SESSION_COOKIE_SECURE: ${WATCHTOWER_SESSION_COOKIE_SECURE:-false}
+      WATCHTOWER_SESSION_COOKIE_SAME_SITE: ${WATCHTOWER_SESSION_COOKIE_SAME_SITE:-lax}
+      WATCHTOWER_BROWSER_ALLOWED_ORIGINS: '${WATCHTOWER_BROWSER_ALLOWED_ORIGINS:-["http://localhost:8010","http://127.0.0.1:8010"]}'
       WATCHTOWER_WEBHOOK_SECRETS: '${WATCHTOWER_WEBHOOK_SECRETS:-{}}'
+      WATCHTOWER_LEGACY_WEBHOOK_PROFILES: '${WATCHTOWER_LEGACY_WEBHOOK_PROFILES:-{}}'
       WATCHTOWER_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS: ${WATCHTOWER_WEBHOOK_SIGNATURE_TOLERANCE_SECONDS:-300}
       WATCHTOWER_MAX_WEBHOOK_BODY_BYTES: ${WATCHTOWER_MAX_WEBHOOK_BODY_BYTES:-262144}
       WATCHTOWER_WEBHOOK_RATE_LIMIT_REQUESTS: ${WATCHTOWER_WEBHOOK_RATE_LIMIT_REQUESTS:-60}
@@ -52,6 +62,26 @@ services:
       retries: 12
       start_period: 5s
 
+  frontend:
+    build:
+      context: ./watchtowersHouse
+      target: runtime
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+
+  frontend-tools:
+    profiles: ["test"]
+    build:
+      context: ./watchtowersHouse
+      target: tools
+    command: ["npm", "test"]
+
   proxy:
     image: nginxinc/nginx-unprivileged:1.27-alpine
     ports:
@@ -61,10 +91,12 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      frontend:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
-        - "wget -q -O /dev/null http://127.0.0.1:8080/api/v1/health/ready"
+        - "wget -q -O /dev/null http://127.0.0.1:8080/api/v1/health/ready && wget -q -O /dev/null http://127.0.0.1:8080/"
       interval: 5s
       timeout: 4s
       retries: 12

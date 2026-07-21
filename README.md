@@ -1,28 +1,29 @@
 # The Watchtower
 
-Backend for an event-driven logging and uptime monitoring service. The current milestone provides authenticated, versioned event ingestion; immutable PostgreSQL event storage; a transactional outbox; FastAPI operational endpoints; structured request correlation; async SQLAlchemy; and Alembic-managed schema versioning.
+Full-stack tenant-aware event logging and uptime monitoring control plane. The current milestone adds a JavaScript React operator UI for browser login, profile-aware Home metrics, and managed API-key lifecycle operations to the existing external authentication, local profiles, profile-scoped monitored services, authenticated event ingestion, immutable PostgreSQL history, transactional outbox, and Alembic-managed schema.
 
 ## Runtime architecture
 
 ```text
-source service --HMAC-signed event--> Nginx edge :8010 --> FastAPI :8000
-                                      |                    |
-                                      | per-IP rate limit  +--> per-service rate limit
-                                      |                         |
-                                      |                         +--> async SQLAlchemy transaction
-                                      |                                |--> immutable PostgreSQL event
-                                      |                                +--> Kafka-ready outbox row
-                                      +--> 256 KiB edge body cap       Alembic manages schema versions
+browser --> Nginx edge :8010 --> static React image :8080
+   |               |
+   |               +--> /api/* --> FastAPI :8000 --stable auth UUID--> local profile
+   |                                      |
+machine --managed API key----------------+--> profile-scoped transaction
+legacy ----mapped HMAC--------------------+       |--> immutable PostgreSQL event
+                                                 +--> Kafka-ready outbox row
 ```
 
-Kafka publishing is deliberately decoupled from the request transaction and remains the next broker-integration milestone.
+The browser and API share one origin at the Nginx edge. FastAPI stores the external session only in an HttpOnly cookie, while React keeps sanitized current-user metadata in memory. Kafka publishing is deliberately decoupled from the request transaction and remains the next broker-integration milestone.
 
 Compose runs:
 
-- `db`: PostgreSQL 17 with an internal-only port and persistent named volume.
+- `db`: PostgreSQL 17 with a persistent named volume and host port `5433` by default; bind or firewall that development port appropriately.
 - `migrate`: one-shot `alembic upgrade head` service.
 - `api`: internal-only, non-root FastAPI/uvicorn runtime on Compose port `8000`.
-- `proxy`: non-root Nginx edge exposed on host port `8010` by default, with a 256 KiB body cap and per-IP webhook rate limiting.
+- `frontend`: non-root Nginx runtime serving the prebuilt React bundle on internal Compose port `8080`.
+- `frontend-tools`: profile-gated Node image containing frontend tests, lint, build, and audit tooling.
+- `proxy`: non-root Nginx edge exposed on host port `8010` by default; it serves the frontend, routes `/api/*` to FastAPI, applies the webhook body cap, and enforces the per-IP webhook limit.
 - `test`: profile-gated image containing the test, lint, and type-check tools.
 
 ## Prerequisites
@@ -43,9 +44,16 @@ cp .env.example .env
 
 The application reads `WATCHTOWER_`-prefixed settings. Never commit `.env`.
 
-`WATCHTOWER_WEBHOOK_SECRETS` is a JSON object mapping registered service slugs to HMAC secrets. Keep the actual value in deployment secret storage; the checked-in example is intentionally empty. PostgreSQL stores only source identity and key-identifier metadata, never the signing secret.
+- `WATCHTOWER_AUTH_SERVICE_URL` points to the external DB Management Auth API. Browser tokens are held only in an HttpOnly cookie and are never persisted by Watchtower.
+- `WATCHTOWER_BROWSER_ALLOWED_ORIGINS` is a JSON array of exact trusted origins. It must include every URL from which operators load the frontend, including the scheme and published edge port. Cookie-authenticated mutations fail closed unless the request supplies one of these origins.
+- `WATCHTOWER_SESSION_COOKIE_SECURE` is `false` only for local HTTP development. Set it to `true` behind production HTTPS.
+- The browser UI and API intentionally use the same origin. Separate-origin deployment is not supported without adding credentialed CORS policy to FastAPI.
+- `WATCHTOWER_WEBHOOK_SECRETS` is a JSON object mapping legacy service slugs to HMAC secrets.
+- `WATCHTOWER_LEGACY_WEBHOOK_PROFILES` is a JSON object mapping every enabled legacy slug to its owning profile UUID. A secret without an explicit profile mapping cannot authenticate.
 
-The default signature freshness window is 300 seconds and the default maximum raw webhook body is 262,144 bytes (256 KiB). The application allows 60 successfully authenticated requests per service per 60-second process-local window. Nginx independently limits the webhook path to 60 requests per minute per client IP with a burst of 20; production ingress must preserve an authoritative client address rather than trusting caller-supplied forwarding headers.
+Managed API keys are created through the authenticated API. Watchtower returns the raw key once with `Cache-Control: no-store`, then stores only a version, non-secret lookup prefix, and domain-separated SHA-256 verifier. Lost keys cannot be recovered; create a replacement and revoke the old metadata row. Service binding and scopes are immutable, revocation is permanent, and ordinary updates cannot extend or remove an expiry.
+
+The default signature freshness window is 300 seconds and the default maximum raw webhook body is 262,144 bytes (256 KiB). The application allows 60 successfully authenticated requests per managed key or mapped legacy sender per 60-second process-local window. Nginx independently limits the webhook path to 60 requests per minute per client IP with a burst of 20; production ingress must preserve an authoritative client address rather than trusting caller-supplied forwarding headers. Managed bearer keys require TLS at or before the trusted edge; the Compose Nginx listener itself is HTTP and must not be exposed directly to an untrusted network.
 
 ## Build and start
 
@@ -57,7 +65,7 @@ docker compose up -d db proxy
 docker compose ps
 ```
 
-The migration service must complete successfully before the API starts.
+The migration service must complete successfully before the API starts. Open the operator UI at `http://127.0.0.1:8010/`; anonymous users are redirected to `/login`. The Home and API Keys routes require a valid external-auth browser session.
 
 ## Operational endpoints
 
@@ -73,13 +81,41 @@ GET http://127.0.0.1:8010/api/v1/openapi.json
 - `ready`: executes `SELECT 1` through an async SQLAlchemy session and returns 503 if PostgreSQL is unavailable.
 - Every HTTP response includes `X-Request-ID`. Safe caller-provided IDs are preserved; invalid values are replaced.
 
+## Authentication and profile-owned resources
+
+Browser session endpoints:
+
+```text
+POST /api/v1/auth/login
+GET  /api/v1/auth/me
+POST /api/v1/auth/logout
+```
+
+A successful `/auth/me` request provisions exactly one local profile for the external service's stable UUID. Email, username, and display name are not ownership keys. Auth-service transport failures return `503`, malformed successful responses return `502`, and invalid sessions return a generic `401`.
+
+Authenticated resource endpoints:
+
+```text
+POST/GET       /api/v1/services
+GET/PATCH/DELETE /api/v1/services/{service_id}
+POST/GET       /api/v1/api-keys
+GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
+```
+
+All lookups and mutations are profile-scoped; cross-profile object probes return `404`. `DELETE` on an API key means irreversible soft revocation. A key creation response is the only response containing raw key material.
+
 ## Event ingestion
 
 ```text
 POST http://127.0.0.1:8010/api/v1/webhooks/events
 ```
 
-The endpoint requires `X-Watchtower-Service`, `X-Watchtower-Timestamp`, and `X-Watchtower-Signature` headers. A valid event and its `watchtower.events.raw.v1` outbox message commit in one transaction. Retrying the same service/event ID returns `202` with `status: duplicate` and creates no additional rows.
+The endpoint always requires `X-Watchtower-Service` and accepts one of two authentication modes:
+
+1. preferred managed mode: `X-Watchtower-API-Key`; or
+2. temporary legacy mode: both `X-Watchtower-Timestamp` and `X-Watchtower-Signature`, with explicit secret and profile mappings.
+
+A valid event and its `watchtower.events.raw.v1` outbox message commit in one profile transaction. Retrying the same profile/service/event ID returns `202` with `status: duplicate` and creates no additional rows.
 
 See [`docs/event-contract.md`](docs/event-contract.md) for the exact envelope, signing algorithm, response contract, and sender example.
 
@@ -91,6 +127,10 @@ Run everything inside the Compose test image:
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests
+docker compose run --rm frontend-tools npm test
+docker compose run --rm frontend-tools npm run lint
+docker compose run --rm frontend-tools npm run build
+docker compose run --rm frontend-tools npm audit --audit-level=high
 ```
 
 The integration suite uses real PostgreSQL rather than SQLite.
@@ -107,8 +147,8 @@ Migration downgrades can remove database objects. Obtain explicit authorization 
 ## Logs and shutdown
 
 ```bash
-docker compose logs --tail 100 proxy api
-docker compose stop proxy api db
+docker compose logs --tail 100 proxy frontend api
+docker compose stop proxy frontend api db
 ```
 
 Do not run `docker compose down -v` unless permanent deletion of the PostgreSQL volume is explicitly intended.

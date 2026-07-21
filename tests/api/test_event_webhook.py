@@ -21,6 +21,7 @@ from watchtower.main import create_app
 from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
+from watchtower.models.profile import Profile
 from watchtower.repositories.monitored_services import create_monitored_service
 
 DATABASE_URL = os.environ.get(
@@ -77,10 +78,17 @@ async def webhook_client(
     rate_limit_requests: int = 60,
 ) -> AsyncIterator[tuple[AsyncClient, str]]:
     source = f"api-{uuid4().hex}"
+    profile_id = uuid4()
+    profile = Profile(
+        id=profile_id,
+        auth_user_id=uuid4(),
+        display_name="Legacy API owner",
+    )
     settings = Settings(
         environment="test",
         database_url=DATABASE_URL,
         webhook_secrets={source: SecretStr(SECRET)},
+        legacy_webhook_profiles={source: profile_id},
         max_webhook_body_bytes=max_body_bytes,
         webhook_rate_limit_requests=rate_limit_requests,
     )
@@ -92,8 +100,11 @@ async def webhook_client(
         if register:
             async with factory() as session:
                 async with session.begin():
+                    session.add(profile)
+                    await session.flush()
                     service = await create_monitored_service(
                         session,
+                        profile_id=profile.id,
                         slug=source,
                         display_name="API integration service",
                         environment="test",
@@ -122,6 +133,9 @@ async def webhook_client(
                                     MonitoredService.id == service.id
                                 )
                             )
+                            await session.execute(
+                                delete(Profile).where(Profile.id == profile.id)
+                            )
 
 
 @pytest.mark.integration
@@ -139,13 +153,14 @@ async def test_openapi_documents_webhook_body_and_response_contract() -> None:
 
         assert {"202", "401", "403", "409", "413", "422", "429"} <= set(responses)
         assert request_schema["title"] == "EventEnvelope"
+        assert parameters["X-Watchtower-Service"]["required"] is True
         for header in (
-            "X-Watchtower-Service",
+            "X-Watchtower-API-Key",
             "X-Watchtower-Timestamp",
             "X-Watchtower-Signature",
         ):
             assert parameters[header]["in"] == "header"
-            assert parameters[header]["required"] is True
+            assert parameters[header]["required"] is False
         assert responses["429"]["headers"]["Retry-After"]["schema"]["type"] == (
             "integer"
         )

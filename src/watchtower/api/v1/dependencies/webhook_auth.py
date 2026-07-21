@@ -1,29 +1,49 @@
-"""FastAPI dependency for authenticated raw webhook requests."""
+"""Tenant-aware authentication for raw webhook requests."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from secrets import token_urlsafe
 from typing import cast
+from uuid import UUID
 
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
+from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from watchtower.core.api_keys import (
+    ApiKeyFormatError,
+    digest_api_key,
+    parse_api_key,
+    verify_api_key,
+)
 from watchtower.core.config import Settings
 from watchtower.core.rate_limit import FixedWindowRateLimiter
 from watchtower.core.security import (
     WebhookAuthenticationError,
+    validate_service_identity,
     validate_webhook_headers,
     verify_webhook_signature,
 )
+from watchtower.db.dependencies import get_db_session
+from watchtower.repositories.api_keys import get_api_key_by_prefix
+from watchtower.repositories.monitored_services import get_monitored_service_by_slug
 
 _GENERIC_AUTH_ERROR = "Invalid webhook authentication"
 _DUMMY_SECRET = token_urlsafe(32)
+_DUMMY_API_KEY_DIGEST = digest_api_key(
+    "wtk_v1_aaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedWebhook:
-    """Authenticated source identity paired with its exact signed bytes."""
+    """Authenticated tenant/source identity paired with exact request bytes."""
 
+    profile_id: UUID
     source: str
     body: bytes
+    api_key_id: UUID | None = None
+    api_key_token: SecretStr | None = None
 
 
 async def read_limited_body(request: Request, limit: int) -> bytes:
@@ -54,13 +74,108 @@ async def read_limited_body(request: Request, limit: int) -> bytes:
     return bytes(body)
 
 
-async def authenticate_webhook(request: Request) -> AuthenticatedWebhook:
-    """Authenticate a service using timestamped HMAC over the raw request body."""
+def _unauthorized(exc: Exception | None = None) -> HTTPException:
+    del exc
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=_GENERIC_AUTH_ERROR,
+    )
+
+
+async def _consume_rate_limit(request: Request, identity: str) -> None:
+    limiter = cast(FixedWindowRateLimiter, request.app.state.webhook_rate_limiter)
+    retry_after = await limiter.consume(identity)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Webhook rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def _authenticate_managed_key(
+    *,
+    session: AsyncSession,
+    source: str,
+    token: str,
+) -> tuple[UUID, UUID]:
+    """Resolve and validate one managed key before request-body consumption."""
+
+    try:
+        validate_service_identity(source)
+        parsed = parse_api_key(token)
+    except (ApiKeyFormatError, WebhookAuthenticationError) as exc:
+        raise _unauthorized(exc) from exc
+
+    now = datetime.now(UTC)
+    async with session.begin():
+        api_key = await get_api_key_by_prefix(
+            session, public_prefix=parsed.public_prefix
+        )
+        expected_digest = (
+            api_key.secret_digest if api_key is not None else _DUMMY_API_KEY_DIGEST
+        )
+        verified = verify_api_key(token, expected_digest)
+        if (
+            api_key is None
+            or not verified
+            or api_key.revoked_at is not None
+            or (api_key.expires_at is not None and api_key.expires_at <= now)
+            or "events:write" not in api_key.scopes
+        ):
+            raise _unauthorized()
+
+        service = await get_monitored_service_by_slug(
+            session,
+            profile_id=api_key.profile_id,
+            slug=source,
+        )
+        if (
+            service is None
+            or not service.active
+            or (api_key.service_id is not None and api_key.service_id != service.id)
+        ):
+            raise _unauthorized()
+
+        return api_key.profile_id, api_key.id
+
+
+async def authenticate_webhook(
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthenticatedWebhook:
+    """Authenticate managed API keys or explicitly mapped legacy HMAC senders."""
 
     settings = cast(Settings, request.app.state.settings)
-    source = request.headers.get("X-Watchtower-Service", "")
-    timestamp = request.headers.get("X-Watchtower-Timestamp", "")
-    signature = request.headers.get("X-Watchtower-Signature", "")
+    source_values = request.headers.getlist("X-Watchtower-Service")
+    managed_values = request.headers.getlist("X-Watchtower-API-Key")
+    if len(source_values) != 1 or len(managed_values) > 1:
+        raise _unauthorized()
+    source = source_values[0]
+    managed_token = managed_values[0] if managed_values else None
+
+    if managed_token is not None:
+        profile_id, api_key_id = await _authenticate_managed_key(
+            session=session,
+            source=source,
+            token=managed_token,
+        )
+        await _consume_rate_limit(request, f"api-key:{api_key_id}")
+        body = await read_limited_body(request, settings.max_webhook_body_bytes)
+        return AuthenticatedWebhook(
+            profile_id=profile_id,
+            source=source,
+            body=body,
+            api_key_id=api_key_id,
+            api_key_token=SecretStr(managed_token),
+        )
+
+    timestamp_values = request.headers.getlist("X-Watchtower-Timestamp")
+    signature_values = request.headers.getlist("X-Watchtower-Signature")
+    if len(timestamp_values) != 1 or len(signature_values) != 1:
+        raise _unauthorized()
+    timestamp = timestamp_values[0]
+    signature = signature_values[0]
     try:
         validate_webhook_headers(
             service=source,
@@ -69,43 +184,25 @@ async def authenticate_webhook(request: Request) -> AuthenticatedWebhook:
             tolerance_seconds=settings.webhook_signature_tolerance_seconds,
         )
     except WebhookAuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=_GENERIC_AUTH_ERROR,
-        ) from exc
+        raise _unauthorized(exc) from exc
+
+    configured_secret = settings.webhook_secrets.get(source)
+    profile_id = settings.legacy_webhook_profiles.get(source)
+    if configured_secret is None or profile_id is None:
+        raise _unauthorized()
 
     body = await read_limited_body(request, settings.max_webhook_body_bytes)
-    configured_secret = settings.webhook_secrets.get(source)
-    secret = (
-        configured_secret.get_secret_value()
-        if configured_secret is not None
-        else _DUMMY_SECRET
-    )
-
     try:
         verify_webhook_signature(
-            secret=secret,
+            secret=configured_secret.get_secret_value(),
             service=source,
             timestamp_header=timestamp,
             signature_header=signature,
             body=body,
             tolerance_seconds=settings.webhook_signature_tolerance_seconds,
         )
-        if configured_secret is None:
-            raise WebhookAuthenticationError(_GENERIC_AUTH_ERROR)
     except WebhookAuthenticationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=_GENERIC_AUTH_ERROR,
-        ) from exc
+        raise _unauthorized(exc) from exc
 
-    limiter = cast(FixedWindowRateLimiter, request.app.state.webhook_rate_limiter)
-    retry_after = await limiter.consume(source)
-    if retry_after is not None:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Webhook rate limit exceeded",
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    return AuthenticatedWebhook(source=source, body=body)
+    await _consume_rate_limit(request, f"legacy:{profile_id}:{source}")
+    return AuthenticatedWebhook(profile_id=profile_id, source=source, body=body)

@@ -16,6 +16,7 @@ from watchtower.schemas.event import EventEnvelope, EventIngestionAcknowledgemen
 from watchtower.services.event_ingestion import (
     EventConflictError,
     InactiveSourceError,
+    ManagedKeyAuthenticationError,
     SourceMismatchError,
     UnknownSourceError,
     ingest_event,
@@ -48,17 +49,29 @@ _AUTH_HEADER_PARAMETERS: list[dict[str, Any]] = [
         "schema": {"type": "string"},
     },
     {
+        "name": "X-Watchtower-API-Key",
+        "in": "header",
+        "required": False,
+        "description": (
+            "Managed profile API key. When present, timestamp and signature are omitted."
+        ),
+        "schema": {
+            "type": "string",
+            "pattern": r"^wtk_v1_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}$",
+        },
+    },
+    {
         "name": "X-Watchtower-Timestamp",
         "in": "header",
-        "required": True,
-        "description": "Unix timestamp included in the HMAC input",
+        "required": False,
+        "description": "Legacy HMAC Unix timestamp; required with signature when no managed key is sent",
         "schema": {"type": "string", "pattern": r"^\d+$"},
     },
     {
         "name": "X-Watchtower-Signature",
         "in": "header",
-        "required": True,
-        "description": "Versioned HMAC-SHA256 signature over the exact body",
+        "required": False,
+        "description": "Legacy HMAC-SHA256 signature; required with timestamp when no managed key is sent",
         "schema": {"type": "string", "pattern": r"^v1=[0-9a-f]{64}$"},
     },
 ]
@@ -101,21 +114,33 @@ async def receive_event(
     try:
         outcome = await ingest_event(
             session,
+            profile_id=authenticated.profile_id,
             authenticated_source=authenticated.source,
             envelope=envelope,
             request_id=request_id,
+            api_key_id=authenticated.api_key_id,
+            api_key_token=authenticated.api_key_token,
         )
     except EventConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Source event ID already exists with different content",
         ) from exc
-    except (SourceMismatchError, UnknownSourceError) as exc:
+    except (
+        ManagedKeyAuthenticationError,
+        SourceMismatchError,
+        UnknownSourceError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid webhook authentication",
         ) from exc
     except InactiveSourceError as exc:
+        if authenticated.api_key_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook authentication",
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Event source is not active",

@@ -15,6 +15,13 @@ class WebhookAuthenticationError(ValueError):
     """Raised when a signed webhook request cannot be authenticated."""
 
 
+def validate_service_identity(service: str) -> None:
+    """Reject malformed service slugs before body consumption or database work."""
+
+    if not _SERVICE_PATTERN.fullmatch(service):
+        raise WebhookAuthenticationError(_AUTHENTICATION_ERROR)
+
+
 def compute_webhook_signature(
     *,
     secret: str,
@@ -41,8 +48,7 @@ def validate_webhook_headers(
     """Reject malformed or stale authentication metadata without reading a body."""
 
     try:
-        if not _SERVICE_PATTERN.fullmatch(service):
-            raise WebhookAuthenticationError(_AUTHENTICATION_ERROR)
+        validate_service_identity(service)
         if not _TIMESTAMP_PATTERN.fullmatch(timestamp_header):
             raise WebhookAuthenticationError(_AUTHENTICATION_ERROR)
         if not _SIGNATURE_PATTERN.fullmatch(signature_header):

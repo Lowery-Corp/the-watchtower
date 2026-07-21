@@ -1,18 +1,10 @@
-"""Transactional outbox records for asynchronous publication."""
+"""Profile-attributed transactional outbox records."""
 
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import (
-    DateTime,
-    ForeignKey,
-    ForeignKeyConstraint,
-    Index,
-    Integer,
-    String,
-    func,
-)
+from sqlalchemy import DateTime, ForeignKeyConstraint, Index, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,14 +12,18 @@ from watchtower.db.base import Base
 
 
 class OutboxMessage(Base):
-    """Kafka-ready message committed in the same transaction as its event."""
+    """Kafka-ready message committed in the same tenant transaction as its event."""
 
     __tablename__ = "outbox_message"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["event_id", "service_id"],
-            ["watchtower.event.id", "watchtower.event.service_id"],
-            name="fk_outbox_event_service",
+            ["event_id", "service_id", "profile_id"],
+            [
+                "watchtower.event.id",
+                "watchtower.event.service_id",
+                "watchtower.event.profile_id",
+            ],
+            name="fk_outbox_event_service_profile",
             ondelete="RESTRICT",
         ),
         Index("ix_outbox_unpublished_retry", "published_at", "next_attempt_at"),
@@ -35,10 +31,8 @@ class OutboxMessage(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     event_id: Mapped[UUID] = mapped_column(nullable=False, unique=True)
-    service_id: Mapped[UUID] = mapped_column(
-        ForeignKey("watchtower.monitored_service.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
+    service_id: Mapped[UUID] = mapped_column(nullable=False)
+    profile_id: Mapped[UUID] = mapped_column(nullable=False)
     topic: Mapped[str] = mapped_column(String(255), nullable=False)
     partition_key: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

@@ -18,6 +18,7 @@ from watchtower.messaging.topics import RAW_EVENTS_TOPIC
 from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
+from watchtower.models.profile import Profile
 from watchtower.repositories.monitored_services import create_monitored_service
 from watchtower.repositories.outbox import create_outbox_message
 from watchtower.schemas.event import EventEnvelope
@@ -57,10 +58,14 @@ async def registered_service(
     active: bool = True,
 ) -> AsyncIterator[MonitoredService]:
     slug = f"ingest-{uuid4().hex}"
+    profile = Profile(auth_user_id=uuid4(), display_name="Ingestion owner")
     async with factory() as session:
         async with session.begin():
+            session.add(profile)
+            await session.flush()
             service = await create_monitored_service(
                 session,
+                profile_id=profile.id,
                 slug=slug,
                 display_name="Ingestion test",
                 environment="test",
@@ -80,6 +85,7 @@ async def registered_service(
                 await session.execute(
                     delete(MonitoredService).where(MonitoredService.id == service.id)
                 )
+                await session.execute(delete(Profile).where(Profile.id == profile.id))
 
 
 @pytest.mark.integration
@@ -93,6 +99,7 @@ async def test_first_ingestion_persists_event_and_outbox_atomically() -> None:
             async with factory() as session:
                 outcome = await ingest_event(
                     session,
+                    profile_id=service.profile_id,
                     authenticated_source=service.slug,
                     envelope=envelope,
                     request_id="request-123",
@@ -110,7 +117,7 @@ async def test_first_ingestion_persists_event_and_outbox_atomically() -> None:
             assert event.request_id == "request-123"
             assert outbox is not None
             assert outbox.topic == RAW_EVENTS_TOPIC
-            assert outbox.partition_key == service.slug
+            assert outbox.partition_key == f"{service.profile_id}:{service.slug}"
             assert outbox.payload["event_id"] == str(outcome.event_id)
     finally:
         await engine.dispose()
@@ -127,6 +134,7 @@ async def test_duplicate_retry_returns_original_without_new_rows() -> None:
             async with factory() as session:
                 first = await ingest_event(
                     session,
+                    profile_id=service.profile_id,
                     authenticated_source=service.slug,
                     envelope=envelope,
                     request_id="request-first",
@@ -134,6 +142,7 @@ async def test_duplicate_retry_returns_original_without_new_rows() -> None:
             async with factory() as session:
                 duplicate = await ingest_event(
                     session,
+                    profile_id=service.profile_id,
                     authenticated_source=service.slug,
                     envelope=envelope,
                     request_id="request-retry",
@@ -168,6 +177,7 @@ async def test_reused_event_id_with_different_payload_is_rejected() -> None:
             async with factory() as session:
                 await ingest_event(
                     session,
+                    profile_id=service.profile_id,
                     authenticated_source=service.slug,
                     envelope=envelope,
                     request_id="request-first",
@@ -176,7 +186,8 @@ async def test_reused_event_id_with_different_payload_is_rejected() -> None:
                 with pytest.raises(EventConflictError):
                     await ingest_event(
                         session,
-                        authenticated_source=service.slug,
+                        profile_id=service.profile_id,
+                    authenticated_source=service.slug,
                         envelope=changed,
                         request_id="request-conflict",
                     )
@@ -209,7 +220,8 @@ async def test_concurrent_identical_ingestion_creates_one_event_and_outbox() -> 
                 async with factory() as session:
                     outcome = await ingest_event(
                         session,
-                        authenticated_source=service.slug,
+                        profile_id=service.profile_id,
+                    authenticated_source=service.slug,
                         envelope=envelope,
                         request_id=request_id,
                     )
@@ -249,7 +261,8 @@ async def test_concurrent_conflicting_ingestion_accepts_one_and_rejects_one() ->
                     try:
                         outcome = await ingest_event(
                             session,
-                            authenticated_source=service.slug,
+                            profile_id=service.profile_id,
+                    authenticated_source=service.slug,
                             envelope=candidate,
                             request_id=request_id,
                         )
@@ -278,7 +291,8 @@ async def test_inactive_source_is_rejected_without_rows() -> None:
                 with pytest.raises(InactiveSourceError):
                     await ingest_event(
                         session,
-                        authenticated_source=service.slug,
+                        profile_id=service.profile_id,
+                    authenticated_source=service.slug,
                         envelope=make_envelope(service.slug),
                         request_id="request-inactive",
                     )
@@ -303,6 +317,7 @@ async def test_outbox_service_must_match_event_service() -> None:
                 async with factory() as session:
                     outcome = await ingest_event(
                         session,
+                        profile_id=event_service.profile_id,
                         authenticated_source=event_service.slug,
                         envelope=make_envelope(event_service.slug),
                         request_id="request-integrity",
@@ -319,6 +334,7 @@ async def test_outbox_service_must_match_event_service() -> None:
                         async with session.begin():
                             await create_outbox_message(
                                 session,
+                                profile_id=event_service.profile_id,
                                 event_id=outcome.event_id,
                                 service_id=wrong_service.id,
                                 topic=RAW_EVENTS_TOPIC,
@@ -350,7 +366,8 @@ async def test_outbox_failure_rolls_back_event(
                 with pytest.raises(RuntimeError, match="forced outbox failure"):
                     await ingest_event(
                         session,
-                        authenticated_source=service.slug,
+                        profile_id=service.profile_id,
+                    authenticated_source=service.slug,
                         envelope=make_envelope(service.slug),
                         request_id="request-rollback",
                     )

@@ -4,9 +4,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+import httpx
 
 from watchtower import __version__
 from watchtower.api.v1.api import router as api_v1_router
+from watchtower.clients.auth_service import AuthServiceClient
 from watchtower.core.config import Settings, get_settings
 from watchtower.core.logging import configure_logging
 from watchtower.core.rate_limit import FixedWindowRateLimiter
@@ -21,12 +23,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     engine = create_async_database_engine(resolved_settings.database_url)
     session_factory = create_session_factory(resolved_settings.database_url, engine=engine)
+    auth_http_client = httpx.AsyncClient(
+        base_url=resolved_settings.auth_service_url.rstrip("/"),
+        timeout=resolved_settings.auth_service_timeout_seconds,
+        follow_redirects=False,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
+            await auth_http_client.aclose()
             await engine.dispose()
 
     app = FastAPI(
@@ -38,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved_settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.auth_client = AuthServiceClient(auth_http_client)
     app.state.webhook_rate_limiter = FixedWindowRateLimiter(
         max_requests=resolved_settings.webhook_rate_limit_requests,
         window_seconds=resolved_settings.webhook_rate_limit_window_seconds,

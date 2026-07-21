@@ -4,7 +4,7 @@
 
 This file is the primary context handoff for AI coding agents working in this repository.
 
-**Current phase: the event-ingestion foundation is shipped on `dev`; the approved profiles, external-auth, managed API-key, and tenant-isolation milestone is active but remains uncommitted in the canonical worktree. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
+**Current phase: the event-ingestion foundation is shipped on `dev`; the approved profiles, external-auth, managed API-key, tenant-isolation, and React operator-frontend milestone is active but remains uncommitted in the canonical worktree. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
 
 When implementation is approved:
 
@@ -26,15 +26,15 @@ The canonical worktree currently contains the in-progress tenant/auth/API-key mi
 - Required development host: **`vm-work-dev-db` over SSH**
 - Required development checkout: **`/home/lowery/the-watchtower`**
 - Local Hermes checkout `/home/lowery/projects/the-watchtower` is an administrative/reference mirror, not the implementation worktree.
-- Scope now: backend only
-- Primary language/framework: Python + FastAPI
+- Scope now: FastAPI backend plus the `watchtowersHouse` JavaScript React operator frontend
+- Primary language/frameworks: Python + FastAPI; JavaScript + React + Vite
 - Primary datastore: PostgreSQL
-- Architecture direction: tenant-aware event ingestion with external identity, profile-owned resources, Kafka-compatible topics, and a transactional outbox boundary
-- Explicitly out of scope for the first implementation: frontend/dashboard, alert delivery, broad analytics, Kubernetes, multi-region deployment
+- Architecture direction: same-origin tenant-aware control plane with external identity, profile-owned resources, Kafka-compatible topics, and a transactional outbox boundary
+- Explicitly out of scope for this milestone: alert delivery, broad analytics, Kubernetes, and multi-region deployment
 
 ## Product intent
 
-The Watchtower is a centralized, tenant-aware logging and uptime-observation backend for the owner's other applications. The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and a UI can consume the event stream later.
+The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, and managed API-key lifecycle operations through the same Nginx origin as the API. The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
 
 The active tenant milestone extends the shipped vertical slice through this path:
 
@@ -110,6 +110,8 @@ The approved but uncommitted canonical-worktree milestone adds:
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
 - Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, and `0008_security_hardening`.
+- A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
+- Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.
 
 Do not describe this active milestone as shipped until full tests, Ruff, strict mypy, dependency checks, Compose validation, Alembic parity and disposable migration cycles, runtime smoke tests, secret scans, and exact-diff reviews all pass and the implementation is committed and pushed to `dev`.
 
@@ -124,6 +126,10 @@ docker compose up -d db proxy
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests
+docker compose run --rm frontend-tools npm test
+docker compose run --rm frontend-tools npm run lint
+docker compose run --rm frontend-tools npm run build
+docker compose run --rm frontend-tools npm audit --audit-level=high
 docker compose run --rm migrate alembic current
 docker compose logs --tail 100 api
 docker compose ps
@@ -146,6 +152,16 @@ Maintain this structure unless the approved plan changes it:
 ├── alembic/
 │   ├── env.py
 │   └── versions/
+├── watchtowersHouse/
+│   ├── Dockerfile
+│   ├── package.json
+│   ├── vite.config.js
+│   └── src/
+│       ├── auth/
+│       ├── components/
+│       ├── layouts/
+│       ├── pages/
+│       └── services/
 ├── src/
 │   └── watchtower/
 │       ├── __init__.py
@@ -361,6 +377,7 @@ Do not add active polling/scheduling until the owner answers whether Watchtower 
 - Contract tests: exact event-envelope and Kafka-message shapes.
 - Worker tests: publish acknowledgement, retry scheduling, duplicate execution.
 - Health tests: liveness independent of dependencies; readiness reflects required dependencies.
+- Frontend tests: login success/failure, protected navigation, profile-aware Home data, API-key loading/empty/error states, one-time disclosure, safe metadata updates, and revocation. Run Vitest, ESLint, Vite build, and `npm audit` in the profile-gated `frontend-tools` container; the runtime image serves only the built static bundle.
 
 Use real PostgreSQL for persistence integration tests; SQLite is not an acceptable substitute for PostgreSQL `JSONB`, schemas, constraints, or async behavior.
 
@@ -372,11 +389,13 @@ Use real PostgreSQL for persistence integration tests; SQLite is not an acceptab
 - Raw managed keys are disclosed once, never persisted, and can authenticate only while unexpired and unrevoked and within immutable binding/scope restrictions.
 - Managed-key state is revalidated in the same transaction as event/outbox persistence, and failed ingestion does not update `last_used_at`.
 - Legacy HMAC works only for explicitly profile-mapped service identities.
+- Operators can sign in through the React frontend, view profile-aware Home metrics, and list, issue, rename, copy once, and revoke profile-owned API keys without exposing session or key material to persistent browser storage.
+- Nginx serves frontend routes and proxies `/api/*` through one configured trusted origin; anonymous protected routes return to Login.
 - Valid events and outbox rows remain atomic and duplicate retries remain deterministic.
 - Alembic upgrades a fresh PostgreSQL database through the full migration head; authorized disposable downgrade/upgrade cycles preserve migration integrity.
-- Full tests, Ruff check/format, strict mypy, `pip check`, Compose validation, migration parity, runtime smoke, tenant isolation, and secret scans pass.
-- The exact intended diff receives independent review, excludes unrelated `compose.yaml`, is committed only on `dev`, and leaves `main` unchanged.
-- No frontend, active polling, production exposure, or unapproved analytics surface is introduced.
+- Full backend and frontend tests, Ruff check/format, strict mypy, ESLint, Vite build, `pip check`, `npm audit`, Compose validation, migration parity, runtime smoke, tenant isolation, and secret scans pass.
+- The exact intended diff receives independent review, isolates intended frontend integration hunks from pre-existing unrelated work, is committed only on `dev`, and leaves `main` unchanged.
+- No active polling, production exposure, or unapproved analytics surface is introduced.
 
 ## Approved defaults and remaining gates
 

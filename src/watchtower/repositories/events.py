@@ -14,6 +14,7 @@ from watchtower.schemas.event import EventEnvelope
 async def create_event_if_absent(
     session: AsyncSession,
     *,
+    profile_id: UUID,
     service_id: UUID,
     envelope: EventEnvelope,
     request_id: str,
@@ -26,6 +27,7 @@ async def create_event_if_absent(
         insert(Event)
         .values(
             id=canonical_id,
+            profile_id=profile_id,
             source_event_id=envelope.event_id,
             service_id=service_id,
             spec_version=envelope.spec_version,
@@ -38,7 +40,9 @@ async def create_event_if_absent(
             request_id=request_id,
             payload=payload,
         )
-        .on_conflict_do_nothing(constraint="uq_event_service_source_event")
+        .on_conflict_do_nothing(
+            constraint="uq_event_profile_service_source_event"
+        )
         .returning(Event)
     )
     result = await session.execute(statement)
@@ -48,6 +52,7 @@ async def create_event_if_absent(
 
     existing = await session.scalar(
         select(Event).where(
+            Event.profile_id == profile_id,
             Event.service_id == service_id,
             Event.source_event_id == envelope.event_id,
         )
