@@ -1,0 +1,343 @@
+name: Validate, Build, and Deploy Watchtower
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchtower-dev-deploy
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Test current source
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WATCHTOWER_API_IMAGE: validation-account/watchtower-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      WATCHTOWER_FRONTEND_IMAGE: validation-account/watchtower-frontend@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      WATCHTOWER_POSTGRES_PASSWORD: ci-only-not-a-deployment-secret
+      WATCHTOWER_ENVIRONMENT: ci-validation
+      WATCHTOWER_AUTH_SERVICE_URL: http://auth-service:8000
+      WATCHTOWER_SESSION_COOKIE_SECURE: "false"
+      WATCHTOWER_BROWSER_ALLOWED_ORIGINS: '["http://localhost:8010"]'
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Validate base and deployment Compose configurations
+        run: |
+          set -eu
+          test -f deploy/nginx/default.conf
+          test -f deploy/compose.deploy.yaml
+          docker compose --profile test config -q
+          docker compose -f compose.yaml -f deploy/compose.deploy.yaml config --format json > /tmp/watchtower-deploy-compose.json
+          python3 - <<'PY'
+          import json
+
+          with open("/tmp/watchtower-deploy-compose.json", encoding="utf-8") as compose_file:
+              config = json.load(compose_file)
+          assert not config["services"]["db"].get("ports"), "deployment must not publish PostgreSQL"
+          assert config["services"]["api"]["image"] == "validation-account/watchtower-api@sha256:" + "a" * 64
+          assert config["services"]["migrate"]["image"] == config["services"]["api"]["image"]
+          assert config["services"]["frontend"]["image"] == "validation-account/watchtower-frontend@sha256:" + "b" * 64
+          PY
+
+      - name: Build test images
+        run: docker compose --profile test build test frontend-tools
+
+      - name: Run backend tests
+        run: docker compose run --rm test pytest -q
+
+      - name: Verify backend dependencies
+        run: docker compose run --rm test pip check
+
+      - name: Run frontend tests
+        run: docker compose run --rm --no-deps frontend-tools npm test
+
+      - name: Lint frontend
+        run: docker compose run --rm --no-deps frontend-tools npm run lint
+
+      - name: Build frontend production bundle
+        run: docker compose run --rm --no-deps frontend-tools npm run build
+
+      - name: Audit frontend dependencies
+        run: docker compose run --rm --no-deps frontend-tools npm audit --audit-level=high
+
+      - name: Clean up CI containers and volumes
+        if: always()
+        run: docker compose --profile test down --volumes --remove-orphans
+
+  build-and-deploy:
+    name: Publish immutable images and deploy
+    needs: quality
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: build and deploy
+
+    steps:
+      - name: Checkout exact commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and push Watchtower API image
+        id: build-api
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/watchtower-api:${{ github.sha }}
+          cache-from: type=gha,scope=watchtower-api
+          cache-to: type=gha,mode=max,scope=watchtower-api
+
+      - name: Build and push Watchtower frontend image
+        id: build-frontend
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./watchtowersHouse
+          file: ./watchtowersHouse/Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/watchtower-frontend:${{ github.sha }}
+          cache-from: type=gha,scope=watchtower-frontend
+          cache-to: type=gha,mode=max,scope=watchtower-frontend
+
+      - name: Connect GitHub Actions to Tailscale
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Deploy exact commit over Tailscale
+        uses: appleboy/ssh-action@7eaf76671a0d7eec5d98ee897acda4f968735a17 # v1.2.0
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+          WATCHTOWER_API_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/watchtower-api@${{ steps.build-api.outputs.digest }}
+          WATCHTOWER_FRONTEND_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/watchtower-frontend@${{ steps.build-frontend.outputs.digest }}
+          WATCHTOWER_POSTGRES_PASSWORD: ${{ secrets.WATCHTOWER_POSTGRES_PASSWORD }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          fingerprint: SHA256:M2JnazkatumKYaR6uyvdjUIYxme5bCEJRtv2y7MZc6k
+          port: 22
+          envs: DEPLOY_SHA,WATCHTOWER_API_IMAGE,WATCHTOWER_FRONTEND_IMAGE,WATCHTOWER_POSTGRES_PASSWORD,DOCKERHUB_USERNAME,DOCKERHUB_TOKEN,SERVER_USER
+          command_timeout: 20m
+          script: |
+            set -eu
+            umask 077
+
+            APP_DIR="/home/$SERVER_USER/the-watchtower"
+            cd "$APP_DIR"
+            test "$(pwd)" = "$APP_DIR"
+
+            validate_checkout() {
+              test "$(git branch --show-current)" = "dev"
+              test -f deploy/nginx/default.conf
+              test -f deploy/compose.deploy.yaml
+              test -f .env
+              test ! -L .env
+              test "$(stat -c %a .env)" = "600"
+              test "$(stat -c %U .env)" = "$(id -un)"
+              git check-ignore -q .env
+              python3 - <<'PY'
+            from pathlib import Path
+
+            required = {
+                "WATCHTOWER_ENVIRONMENT",
+                "WATCHTOWER_AUTH_SERVICE_URL",
+                "WATCHTOWER_SESSION_COOKIE_SECURE",
+                "WATCHTOWER_BROWSER_ALLOWED_ORIGINS",
+            }
+            values = {key: [] for key in required}
+            for raw_line in Path(".env").read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if key in values:
+                    values[key].append(value.strip())
+            for key, matches in values.items():
+                assert len(matches) == 1, f"{key} must occur exactly once in .env"
+                assert matches[0], f"{key} must not be empty in .env"
+            assert values["WATCHTOWER_SESSION_COOKIE_SECURE"][0] in {"true", "false"}, (
+                "WATCHTOWER_SESSION_COOKIE_SECURE must be true or false"
+            )
+            PY
+              test -z "$(git status --porcelain)"
+            }
+
+            validate_checkout
+            python3 - <<'PY'
+            import os
+            import re
+
+            password = os.environ.get("WATCHTOWER_POSTGRES_PASSWORD", "")
+            assert re.fullmatch(r"[A-Za-z0-9._~-]{32,}", password), (
+                "WATCHTOWER_POSTGRES_PASSWORD must be at least 32 URL-safe characters"
+            )
+            PY
+            test -z "$(git status --porcelain)"
+
+            git fetch --prune origin dev
+            test "$(git rev-parse origin/dev)" = "$DEPLOY_SHA"
+            git merge --ff-only "$DEPLOY_SHA"
+            test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+            validate_checkout
+
+            DOCKER_CONFIG="$(mktemp -d)"
+            COMPOSE_RENDER="$(mktemp)"
+            ROTATE_SQL="$(mktemp)"
+            export DOCKER_CONFIG COMPOSE_RENDER ROTATE_SQL WATCHTOWER_API_IMAGE WATCHTOWER_FRONTEND_IMAGE WATCHTOWER_POSTGRES_PASSWORD
+            COMPOSE="docker compose -f compose.yaml -f deploy/compose.deploy.yaml"
+            rollback_armed=0
+            previous_api_image=""
+            previous_frontend_image=""
+
+            cleanup() {
+              status=$?
+              trap - EXIT
+              if [ "$status" -ne 0 ]; then
+                echo "Deployment failed; collecting bounded diagnostics."
+                set +e
+                $COMPOSE ps
+                $COMPOSE logs --tail 100 api frontend proxy
+                if [ "$rollback_armed" -eq 1 ] && [ -n "$previous_api_image" ] && [ -n "$previous_frontend_image" ]; then
+                  echo "Restoring the previous application images. Database migrations must remain backward-compatible."
+                  WATCHTOWER_API_IMAGE="$previous_api_image"
+                  WATCHTOWER_FRONTEND_IMAGE="$previous_frontend_image"
+                  export WATCHTOWER_API_IMAGE WATCHTOWER_FRONTEND_IMAGE
+                  $COMPOSE up -d --no-build --no-deps api frontend
+                  $COMPOSE up -d --no-build --no-deps --force-recreate proxy
+                  $COMPOSE ps
+                fi
+                set -e
+              fi
+              rm -rf "$DOCKER_CONFIG"
+              rm -f "$COMPOSE_RENDER"
+              rm -f "$ROTATE_SQL"
+              rm -f .env.deploying
+              exit "$status"
+            }
+            trap cleanup EXIT
+
+            wait_for_health() {
+              service="$1"
+              for attempt in $(seq 1 60); do
+                cid=""
+                health="missing"
+                if cid="$($COMPOSE ps -q "$service" 2>/dev/null)" && [ -n "$cid" ]; then
+                  if ! health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null)"; then
+                    health="missing"
+                  fi
+                fi
+                if [ "$health" = "healthy" ]; then
+                  return 0
+                fi
+                sleep 2
+              done
+              echo "$service did not become healthy"
+              return 1
+            }
+
+            printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+            $COMPOSE config --format json > "$COMPOSE_RENDER"
+            python3 - <<'PY'
+            import json
+
+            import os
+
+            with open(os.environ["COMPOSE_RENDER"], encoding="utf-8") as compose_file:
+                config = json.load(compose_file)
+            assert not config["services"]["db"].get("ports"), "deployment must not publish PostgreSQL"
+            PY
+            rm -f "$COMPOSE_RENDER"
+
+            current_api_id="$($COMPOSE ps -q api)"
+            current_frontend_id="$($COMPOSE ps -q frontend)"
+            if [ -n "$current_api_id" ]; then
+              previous_api_image="$(docker inspect -f '{{.Config.Image}}' "$current_api_id")"
+            fi
+            if [ -n "$current_frontend_id" ]; then
+              previous_frontend_image="$(docker inspect -f '{{.Config.Image}}' "$current_frontend_id")"
+            fi
+
+            $COMPOSE pull api frontend
+
+            python3 - <<'PY'
+            import os
+            from pathlib import Path
+
+            password = os.environ["WATCHTOWER_POSTGRES_PASSWORD"]
+            env_path = Path(".env")
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            replacement = f"WATCHTOWER_POSTGRES_PASSWORD={password}"
+            updated = []
+            replaced = False
+            for line in lines:
+                if line.startswith("WATCHTOWER_POSTGRES_PASSWORD="):
+                    if not replaced:
+                        updated.append(replacement)
+                        replaced = True
+                else:
+                    updated.append(line)
+            if not replaced:
+                updated.append(replacement)
+            temporary = env_path.with_name(".env.deploying")
+            temporary.write_text("\n".join(updated) + "\n", encoding="utf-8")
+            temporary.chmod(0o600)
+            temporary.replace(env_path)
+
+            sql_password = "'" + password.replace("'", "''") + "'"
+            Path(os.environ["ROTATE_SQL"]).write_text(
+                f"ALTER ROLE CURRENT_USER PASSWORD {sql_password};\n",
+                encoding="utf-8",
+            )
+            PY
+
+            $COMPOSE up -d db
+            wait_for_health db
+            $COMPOSE exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < "$ROTATE_SQL"
+            rm -f "$ROTATE_SQL"
+            rollback_armed=1
+            $COMPOSE run --rm migrate
+            $COMPOSE up -d --no-build --no-deps api frontend
+            wait_for_health api
+            wait_for_health frontend
+
+            $COMPOSE up -d --no-build --no-deps --force-recreate proxy
+            wait_for_health proxy
+
+            $COMPOSE exec -T proxy wget -q -O /dev/null http://127.0.0.1:8080/api/v1/health/ready
+            $COMPOSE exec -T proxy wget -q -O /dev/null http://127.0.0.1:8080/services
+
+            deployed_api_image="$(docker inspect -f '{{.Config.Image}}' "$($COMPOSE ps -q api)")"
+            deployed_frontend_image="$(docker inspect -f '{{.Config.Image}}' "$($COMPOSE ps -q frontend)")"
+            test "$deployed_api_image" = "$WATCHTOWER_API_IMAGE"
+            test "$deployed_frontend_image" = "$WATCHTOWER_FRONTEND_IMAGE"
+
+            rollback_armed=0
+            $COMPOSE ps
