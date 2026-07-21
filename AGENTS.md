@@ -136,7 +136,7 @@ docker compose logs --tail 100 api
 docker compose ps
 ```
 
-Automated development deployment is defined in `.github/workflows/deploy.yml` and triggers on `dev` pushes or manual dispatch from `dev`. It runs the containerized quality gates, publishes commit-SHA-tagged `watchtower-api` and `watchtower-frontend` images, then deploys their immutable registry digests through Tailscale with `deploy/compose.deploy.yaml`. The remote script must pin SSH host identity; require an ignored, owner-owned `0600` `.env` with each non-secret runtime setting present exactly once before and after fast-forward; require a URL-safe `WATCHTOWER_POSTGRES_PASSWORD` GitHub secret and rotate/persist it without logging; require a clean `dev` checkout at the triggering SHA; run backward-compatible migrations before API replacement; remove PostgreSQL host publication; preserve its volume; wait for API/frontend/proxy health; verify exact running digest references; and restore prior application images on failed health. Keep all third-party actions pinned to immutable commit SHAs. Never weaken deployment failures, deploy mutable tags, print GitHub/runtime secrets, or use `docker compose down`/volume deletion on the deployment host. Ephemeral GitHub runner test volumes should be removed in the workflow's unconditional cleanup step.
+Automated deployment is defined in `.github/workflows/deploy.yml` and follows Scrappy's single `build-and-deploy` job structure. Pushes to `main` run the compact Compose/backend/frontend test block, publish `latest` and commit-SHA `watchtower-frontend` and `watchtower-api` images, connect through Tailscale, then execute the same remote pull, Compose shutdown/rebuild, and image-prune sequence used by Scrappy. Keep Watchtower changes on `dev`; deployment begins only after the intended changes reach `main`.
 
 Alembic downgrades and volume removal are destructive operations and require explicit owner authorization. Never run `docker compose down -v` by default.
 
@@ -154,7 +154,6 @@ Maintain this structure unless the approved plan changes it:
 ├── Dockerfile
 ├── compose.yaml
 ├── deploy/
-│   ├── compose.deploy.yaml
 │   └── nginx/
 │       └── default.conf
 ├── .env.example
