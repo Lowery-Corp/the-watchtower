@@ -20,7 +20,7 @@ from watchtower.clients.auth_service import (
     AuthServiceUnavailable,
 )
 from watchtower.db.dependencies import get_db_session
-from watchtower.schemas.auth import AuthUserResponse, CurrentUserResponse, LoginRequest
+from watchtower.schemas.auth import CurrentUserResponse, LoginRequest
 from watchtower.services.profiles import provision_profile_for_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -28,10 +28,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post(
     "/login",
-    response_model=AuthUserResponse,
-    responses={401: {"description": "Invalid credentials"}, 503: {"description": "Auth unavailable"}},
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        401: {"description": "Invalid credentials"},
+        503: {"description": "Auth unavailable"},
+    },
 )
-async def login(payload: LoginRequest, request: Request, response: Response) -> AuthUserResponse:
+async def login(payload: LoginRequest, request: Request) -> Response:
     """Create a browser session using the external auth service."""
 
     client = cast(AuthServiceClient, request.app.state.auth_client)
@@ -65,6 +68,7 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         ) from exc
 
     settings = request.app.state.settings
+    response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.set_cookie(
         key=settings.session_cookie_name,
         value=session.token.get_secret_value(),
@@ -74,13 +78,16 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         samesite=settings.session_cookie_same_site,
         path="/",
     )
-    return AuthUserResponse.model_validate(session.user, from_attributes=True)
+    return response
 
 
 @router.get(
     "/me",
     response_model=CurrentUserResponse,
-    responses={401: {"description": "Authentication required"}, 503: {"description": "Auth unavailable"}},
+    responses={
+        401: {"description": "Authentication required"},
+        503: {"description": "Auth unavailable"},
+    },
 )
 async def current_user(
     authenticated: Annotated[AuthenticatedRequest, Depends(get_authenticated_request)],

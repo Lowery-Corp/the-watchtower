@@ -1,6 +1,6 @@
 # The Watchtower
 
-Full-stack tenant-aware event logging and uptime monitoring control plane. The current milestone adds a JavaScript React operator UI for browser login, profile-aware Home metrics, and managed API-key lifecycle operations to the existing external authentication, local profiles, profile-scoped monitored services, authenticated event ingestion, immutable PostgreSQL history, transactional outbox, and Alembic-managed schema.
+Full-stack tenant-aware event logging and uptime monitoring control plane. Its JavaScript React operator UI provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations over the existing external authentication, local profiles, authenticated event ingestion, immutable PostgreSQL history, transactional outbox, and Alembic-managed schema.
 
 ## Runtime architecture
 
@@ -65,7 +65,7 @@ docker compose up -d db proxy
 docker compose ps
 ```
 
-The migration service must complete successfully before the API starts. Open the operator UI at `http://127.0.0.1:8010/`; anonymous users are redirected to `/login`. The Home and API Keys routes require a valid external-auth browser session.
+The migration service must complete successfully before the API starts. Open the operator UI at `http://127.0.0.1:8010/`; anonymous users are redirected to `/login`. The Home, Monitored Services, and API Keys routes require a valid external-auth browser session.
 
 ## Operational endpoints
 
@@ -91,7 +91,7 @@ GET  /api/v1/auth/me
 POST /api/v1/auth/logout
 ```
 
-A successful `/auth/me` request provisions exactly one local profile for the external service's stable UUID. Email, username, and display name are not ownership keys. Auth-service transport failures return `503`, malformed successful responses return `502`, and invalid sessions return a generic `401`.
+`POST /auth/login` validates credentials and returns an empty `204` while establishing the HttpOnly session cookie; it does not return identity data. `GET /auth/me` is protected and is the sole browser endpoint that returns the current external identity and local profile metadata. A successful `/auth/me` request provisions exactly one local profile for the external service's stable UUID. Email, username, and display name are not ownership keys. Auth-service transport failures return `503`, malformed successful responses return `502`, and invalid sessions return a generic `401`.
 
 Authenticated resource endpoints:
 
@@ -102,7 +102,9 @@ POST/GET       /api/v1/api-keys
 GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 ```
 
-All lookups and mutations are profile-scoped; cross-profile object probes return `404`. `DELETE` on an API key means irreversible soft revocation. A key creation response is the only response containing raw key material.
+All identity, service, and API-key information routes require a validated session cookie or explicit bearer credential. All resource lookups and mutations are profile-scoped; anonymous requests return `401`, and cross-profile object probes return `404`. Cookie-authenticated POST, PATCH, and DELETE requests require one exact trusted `Origin`.
+
+The protected React route `/services` provides create, list, edit, deactivate, and reactivate controls. Service slugs are immutable webhook identities; display name, environment, and active state are mutable. `DELETE` on a service deactivates it while retaining historical events. `DELETE` on an API key means irreversible soft revocation. A key creation response is the only response containing raw key material.
 
 ## Event ingestion
 
@@ -127,10 +129,10 @@ Run everything inside the Compose test image:
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests
-docker compose run --rm frontend-tools npm test
-docker compose run --rm frontend-tools npm run lint
-docker compose run --rm frontend-tools npm run build
-docker compose run --rm frontend-tools npm audit --audit-level=high
+docker compose run --rm --no-deps frontend-tools npm test
+docker compose run --rm --no-deps frontend-tools npm run lint
+docker compose run --rm --no-deps frontend-tools npm run build
+docker compose run --rm --no-deps frontend-tools npm audit --audit-level=high
 ```
 
 The integration suite uses real PostgreSQL rather than SQLite.
@@ -143,6 +145,32 @@ docker compose run --rm migrate alembic history
 ```
 
 Migration downgrades can remove database objects. Obtain explicit authorization and verify backups/scope before running them outside an empty development database.
+
+## Automated development deployment
+
+`.github/workflows/deploy.yml` validates and deploys every pushed `dev` commit, and also supports manual `workflow_dispatch`. The `build and deploy` GitHub environment must provide these existing secrets:
+
+```text
+DOCKERHUB_USERNAME
+DOCKERHUB_TOKEN
+WATCHTOWER_POSTGRES_PASSWORD
+TS_OAUTH_CLIENT_ID
+TS_OAUTH_SECRET
+SERVER_HOST
+SERVER_USER
+SERVER_SSH_KEY
+```
+
+The workflow runs backend and frontend tests, dependency checks, frontend lint/build/audit, and both base and deployment-overlay Compose validation before publishing commit-SHA tags. Deployment consumes the registry digests returned by BuildKit rather than mutable tags:
+
+```text
+<dockerhub-user>/watchtower-api@sha256:<digest>
+<dockerhub-user>/watchtower-frontend@sha256:<digest>
+```
+
+`deploy/compose.deploy.yaml` overlays those immutable image references onto `compose.yaml` and removes the development PostgreSQL host-port publication. Deployment connects through Tailscale, pins the server's SSH host fingerprint, rejects manual dispatches outside `dev`, requires the server checkout to be clean and on `dev`, verifies `origin/dev` equals the triggering SHA, and fast-forwards the checkout. It then preserves the PostgreSQL volume, ensures the database is healthy, rotates its credential, runs Alembic, updates API/frontend, recreates the proxy after upstream changes, waits for all health checks, probes readiness and `/services`, and verifies the running digest references. The first deployment may briefly recreate the database container to remove its old host-port mapping, but it does not remove the persistent volume. Failed application health restores the previous API/frontend images and recreates the proxy; database migrations must therefore remain backward-compatible with the previous application version.
+
+The server retains its ignored `.env` for runtime application configuration. Before and after the checkout fast-forward, deployment requires that file to be a regular, owner-owned `0600` file and requires each non-secret runtime setting to occur exactly once with a non-empty value. The deployment overlay independently makes those resolved values mandatory, so duplicate or empty assignments cannot fall back to Compose's local defaults. `WATCHTOWER_POSTGRES_PASSWORD` must be at least 32 URL-safe characters (`A-Z`, `a-z`, digits, `.`, `_`, `~`, or `-`) because Compose uses it in both PostgreSQL and an SQLAlchemy URL. Each deployment rotates the database role through local `psql` input without exposing the value in command arguments or logs, then atomically persists it in `.env`. The workflow uses an ephemeral Docker CLI configuration for registry login and removes it at the end of the SSH session. Do not place runtime secret values in the workflow or committed Compose files.
 
 ## Logs and shutdown
 

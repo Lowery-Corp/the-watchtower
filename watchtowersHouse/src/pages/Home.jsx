@@ -43,7 +43,7 @@ export default function Home() {
   const activeKeys = useMemo(() => apiKeys.filter((key) => (
     !key.revoked_at && (!key.expires_at || new Date(key.expires_at) > new Date())
   )).length, [apiKeys]);
-  const displayName = user?.profile?.display_name || user?.username || "operator";
+  const displayName = user?.display_name || user?.username || "operator";
 
   return (
     <div className="space-y-8">
@@ -67,7 +67,13 @@ export default function Home() {
         </section>
       )}
 
-      <section className="grid gap-4 lg:grid-cols-2">
+      <section className="grid gap-4 lg:grid-cols-3">
+        <article className="panel p-6">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Event sources</p>
+          <h2 className="mt-3 font-display text-2xl font-semibold text-white">Manage monitored services</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-400">Register source identities, maintain environment metadata, and pause or resume ingestion.</p>
+          <Link to="/services" className="secondary-button mt-6 inline-flex">Open Services</Link>
+        </article>
         <article className="panel p-6">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Machine access</p>
           <h2 className="mt-3 font-display text-2xl font-semibold text-white">Manage ingestion keys</h2>
@@ -78,7 +84,7 @@ export default function Home() {
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Profile identity</p>
           <dl className="mt-4 space-y-3 text-sm">
             <div className="flex justify-between gap-4"><dt className="text-slate-500">Username</dt><dd className="truncate text-slate-200">{user?.username}</dd></div>
-            <div className="flex justify-between gap-4"><dt className="text-slate-500">Profile ID</dt><dd className="truncate font-mono text-xs text-slate-300">{user?.profile?.id}</dd></div>
+            <div className="flex justify-between gap-4"><dt className="text-slate-500">Profile ID</dt><dd className="truncate font-mono text-xs text-slate-300">{user?.profile_id}</dd></div>
             <div className="flex justify-between gap-4"><dt className="text-slate-500">Role</dt><dd className="text-slate-200">{user?.is_admin ? "Administrator" : "Operator"}</dd></div>
           </dl>
         </article>

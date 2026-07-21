@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import App from "../App";
@@ -17,7 +17,10 @@ vi.mock("../services/auth", () => ({
 
 vi.mock("../services/apiKeys", () => ({ listApiKeys: vi.fn() }));
 vi.mock("../services/monitoredServices", () => ({
+  createMonitoredService: vi.fn(),
+  deactivateMonitoredService: vi.fn(),
   listMonitoredServices: vi.fn(),
+  updateMonitoredService: vi.fn(),
 }));
 
 describe("browser authentication", () => {
@@ -34,12 +37,8 @@ describe("browser authentication", () => {
         id: "2b18df27-4f10-4edf-9bc0-da25674f17a8",
         username: "watcher@example.com",
         is_admin: false,
-        profile: {
-          id: "464c8d2a-11ac-498e-92d0-aed71ea16c94",
-          external_user_id: "2b18df27-4f10-4edf-9bc0-da25674f17a8",
-          display_name: "Night Watch",
-          email: "watcher@example.com",
-        },
+        profile_id: "464c8d2a-11ac-498e-92d0-aed71ea16c94",
+        display_name: "Night Watch",
       });
     loginSession.mockResolvedValue({
       id: "2b18df27-4f10-4edf-9bc0-da25674f17a8",
@@ -73,6 +72,18 @@ describe("browser authentication", () => {
     ).toBeVisible();
   });
 
+  it("protects the monitored-services route from anonymous users", async () => {
+    getCurrentUser.mockRejectedValueOnce({ response: { status: 401 } });
+
+    render(
+      <MemoryRouter initialEntries={["/services"]}>
+        <AuthProvider><App /></AuthProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: /sign in to watchtower/i })).toBeVisible();
+  });
+
   it("returns to the requested protected route after login", async () => {
     getCurrentUser
       .mockRejectedValueOnce({ response: { status: 401 } })
@@ -80,14 +91,15 @@ describe("browser authentication", () => {
         id: "user-1",
         username: "watcher@example.com",
         is_admin: false,
-        profile: { id: "profile-1", display_name: "Night Watch" },
+        profile_id: "profile-1",
+        display_name: "Night Watch",
       });
     loginSession.mockResolvedValue({ id: "user-1", username: "watcher@example.com" });
 
     render(
       <MemoryRouter initialEntries={[{
         pathname: "/login",
-        state: { from: { pathname: "/api-keys" } },
+        state: { from: { pathname: "/services" } },
       }]}>
         <AuthProvider><App /></AuthProvider>
       </MemoryRouter>,
@@ -98,7 +110,7 @@ describe("browser authentication", () => {
     await user.type(screen.getByLabelText(/password/i), "test-password");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
-    expect(await screen.findByRole("heading", { name: "API Keys" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Monitored Services" })).toBeVisible();
   });
 
   it("keeps a generic backend authentication failure visible", async () => {
@@ -129,12 +141,8 @@ describe("browser authentication", () => {
       id: "2b18df27-4f10-4edf-9bc0-da25674f17a8",
       username: "watcher@example.com",
       is_admin: false,
-      profile: {
-        id: "464c8d2a-11ac-498e-92d0-aed71ea16c94",
-        external_user_id: "2b18df27-4f10-4edf-9bc0-da25674f17a8",
-        display_name: "Night Watch",
-        email: "watcher@example.com",
-      },
+      profile_id: "464c8d2a-11ac-498e-92d0-aed71ea16c94",
+      display_name: "Night Watch",
     });
     listMonitoredServices.mockResolvedValue([{ id: "service-1", active: true }]);
     listApiKeys.mockResolvedValue([
@@ -151,9 +159,11 @@ describe("browser authentication", () => {
       </MemoryRouter>,
     );
 
-    expect((await screen.findByText("Monitored services")).parentElement).toHaveTextContent("1");
-    expect(screen.getByText("Active API keys").parentElement).toHaveTextContent("1");
-    expect(screen.getByText("Total API keys").parentElement).toHaveTextContent("3");
+    await waitFor(() => {
+      expect(screen.getByText("Monitored services").parentElement).toHaveTextContent("1");
+      expect(screen.getByText("Active API keys").parentElement).toHaveTextContent("1");
+      expect(screen.getByText("Total API keys").parentElement).toHaveTextContent("3");
+    });
   });
 
   it("preserves the session-expiration explanation after redirecting to Login", async () => {
@@ -161,7 +171,8 @@ describe("browser authentication", () => {
       id: "user-1",
       username: "watcher@example.com",
       is_admin: false,
-      profile: { id: "profile-1", display_name: "Night Watch" },
+      profile_id: "profile-1",
+      display_name: "Night Watch",
     });
 
     render(
@@ -184,7 +195,8 @@ describe("browser authentication", () => {
       id: "user-1",
       username: "watcher@example.com",
       is_admin: false,
-      profile: { id: "profile-1", display_name: "Night Watch" },
+      profile_id: "profile-1",
+      display_name: "Night Watch",
     });
     logoutSession.mockRejectedValue(new Error("Network Error"));
 

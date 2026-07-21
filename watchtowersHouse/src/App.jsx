@@ -4,6 +4,7 @@ import AppLayout from "./layouts/AppLayout";
 import Home from "./pages/Home";
 import ApiKeys from "./pages/ApiKeys";
 import Login from "./pages/Login";
+import MonitoredServices from "./pages/MonitoredServices";
 
 function NotFound() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/home" replace />} />
           <Route path="home" element={<Home />} />
+          <Route path="services" element={<MonitoredServices />} />
           <Route path="api-keys" element={<ApiKeys />} />
         </Route>
       </Route>

@@ -4,7 +4,7 @@
 
 This file is the primary context handoff for AI coding agents working in this repository.
 
-**Current phase: the event-ingestion foundation is shipped on `dev`; the approved profiles, external-auth, managed API-key, tenant-isolation, and React operator-frontend milestone is active but remains uncommitted in the canonical worktree. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
+**Current phase: the event-ingestion, profiles, external-auth, managed API-key, tenant-isolation, and React operator-frontend foundation is shipped on `dev`; protected monitored-service management is the active extension. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
 
 When implementation is approved:
 
@@ -14,7 +14,7 @@ When implementation is approved:
 4. Keep commits small and scoped. Never commit credentials, `.env`, payload samples containing private data, or generated cache/build artifacts.
 5. Update this file whenever an approved architecture decision changes.
 
-The canonical worktree currently contains the in-progress tenant/auth/API-key milestone and an unrelated pre-existing `compose.yaml` modification. Before staging or committing, inspect `git status`, preserve the existing index fingerprint, and stage explicit intended paths only. Never use `git add .`, `git add -A`, broad reset/restore commands, or include `compose.yaml` without separate owner direction.
+Before staging or committing, inspect `git status`, preserve any existing index fingerprint, and stage explicit intended paths only. Never use `git add .`, `git add -A`, broad reset/restore commands, or sweep unrelated work into a feature commit.
 
 ## Project identity
 
@@ -34,7 +34,7 @@ The canonical worktree currently contains the in-progress tenant/auth/API-key mi
 
 ## Product intent
 
-The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, and managed API-key lifecycle operations through the same Nginx origin as the API. The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
+The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations through the same Nginx origin as the API. The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
 
 The active tenant milestone extends the shipped vertical slice through this path:
 
@@ -99,7 +99,7 @@ The committed `dev` branch includes:
 - Service-owned event/outbox transactions; repositories never commit.
 - Host port `8010` terminates at the non-root Nginx proxy; FastAPI and PostgreSQL are not published to the host.
 
-The approved but uncommitted canonical-worktree milestone adds:
+The committed tenant/auth/frontend milestone adds:
 
 - Typed, fail-closed external-auth client and browser login/logout/current-user routes.
 - One local profile per stable external identity UUID, provisioned idempotently.
@@ -111,9 +111,10 @@ The approved but uncommitted canonical-worktree milestone adds:
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
 - Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, and `0008_security_hardening`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
+- The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
 - Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.
 
-Do not describe this active milestone as shipped until full tests, Ruff, strict mypy, dependency checks, Compose validation, Alembic parity and disposable migration cycles, runtime smoke tests, secret scans, and exact-diff reviews all pass and the implementation is committed and pushed to `dev`.
+Do not describe the active monitored-services extension as shipped until full tests, Ruff, strict mypy, dependency checks, Compose validation, runtime smoke tests, secret scans, and exact-diff reviews all pass and the implementation is committed and pushed to `dev`.
 
 Legacy HMAC signing secrets are supplied only through deployment configuration (`WATCHTOWER_WEBHOOK_SECRETS`) and require matching profile ownership in `WATCHTOWER_LEGACY_WEBHOOK_PROFILES`; neither secret is stored in PostgreSQL or Git. Managed raw API keys are disclosed once and never persisted. Kafka client selection and outbox publication remain gated on a real broker spike.
 
@@ -126,14 +127,16 @@ docker compose up -d db proxy
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests
-docker compose run --rm frontend-tools npm test
-docker compose run --rm frontend-tools npm run lint
-docker compose run --rm frontend-tools npm run build
-docker compose run --rm frontend-tools npm audit --audit-level=high
+docker compose run --rm --no-deps frontend-tools npm test
+docker compose run --rm --no-deps frontend-tools npm run lint
+docker compose run --rm --no-deps frontend-tools npm run build
+docker compose run --rm --no-deps frontend-tools npm audit --audit-level=high
 docker compose run --rm migrate alembic current
 docker compose logs --tail 100 api
 docker compose ps
 ```
+
+Automated development deployment is defined in `.github/workflows/deploy.yml` and triggers on `dev` pushes or manual dispatch from `dev`. It runs the containerized quality gates, publishes commit-SHA-tagged `watchtower-api` and `watchtower-frontend` images, then deploys their immutable registry digests through Tailscale with `deploy/compose.deploy.yaml`. The remote script must pin SSH host identity; require an ignored, owner-owned `0600` `.env` with each non-secret runtime setting present exactly once before and after fast-forward; require a URL-safe `WATCHTOWER_POSTGRES_PASSWORD` GitHub secret and rotate/persist it without logging; require a clean `dev` checkout at the triggering SHA; run backward-compatible migrations before API replacement; remove PostgreSQL host publication; preserve its volume; wait for API/frontend/proxy health; verify exact running digest references; and restore prior application images on failed health. Keep all third-party actions pinned to immutable commit SHAs. Never weaken deployment failures, deploy mutable tags, print GitHub/runtime secrets, or use `docker compose down`/volume deletion on the deployment host. Ephemeral GitHub runner test volumes should be removed in the workflow's unconditional cleanup step.
 
 Alembic downgrades and volume removal are destructive operations and require explicit owner authorization. Never run `docker compose down -v` by default.
 
@@ -143,10 +146,17 @@ Maintain this structure unless the approved plan changes it:
 
 ```text
 .
+├── .github/
+│   └── workflows/
+│       └── deploy.yml
 ├── AGENTS.md
 ├── pyproject.toml
 ├── Dockerfile
 ├── compose.yaml
+├── deploy/
+│   ├── compose.deploy.yaml
+│   └── nginx/
+│       └── default.conf
 ├── .env.example
 ├── alembic.ini
 ├── alembic/
@@ -291,7 +301,7 @@ POST/GET /api/v1/api-keys
 GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 ```
 
-External auth tokens remain browser-session credentials and are never stored in the Watchtower database. Profile and ownership identity comes only from the stable external UUID, not mutable email, username, or display name. All service and key queries include `profile_id`; cross-profile access returns `404`. Raw managed keys are returned once with `Cache-Control: no-store`, never listed again, and never logged.
+External auth tokens remain browser-session credentials and are never stored in the Watchtower database. Successful login returns an empty `204` plus the HttpOnly cookie; only protected `GET /auth/me` returns current identity and profile metadata. Profile and ownership identity comes only from the stable external UUID, not mutable email, username, or display name. All service and key queries include `profile_id`; cross-profile access returns `404`. Raw managed keys are returned once with `Cache-Control: no-store`, never listed again, and never logged.
 
 ## Persistence direction
 

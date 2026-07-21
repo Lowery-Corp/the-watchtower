@@ -30,11 +30,12 @@ export default function AppLayout() {
           <BrandMark compact />
           <nav aria-label="Primary navigation" className="order-3 flex w-full items-center justify-center gap-1 border-t border-white/5 pt-2 sm:order-none sm:w-auto sm:border-0 sm:pt-0">
             <NavLink to="/home" className={navClass}>Home</NavLink>
+            <NavLink to="/services" className={navClass}>Services</NavLink>
             <NavLink to="/api-keys" className={navClass}>API Keys</NavLink>
           </nav>
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium text-slate-200">{user?.profile?.display_name || user?.username}</p>
+              <p className="text-sm font-medium text-slate-200">{user?.display_name || user?.username}</p>
               <p className="text-xs text-slate-500">{user?.is_admin ? "Administrator" : "Operator"}</p>
             </div>
             <button type="button" disabled={signingOut} onClick={handleLogout} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:border-amber-300/30 hover:text-amber-200 disabled:opacity-60">

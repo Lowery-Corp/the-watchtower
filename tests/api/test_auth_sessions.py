@@ -4,7 +4,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -94,7 +94,7 @@ async def auth_client(
 
 
 @pytest.mark.integration
-async def test_login_sets_secure_http_only_cookie_without_returning_token() -> None:
+async def test_login_sets_secure_http_only_cookie_without_returning_user_info() -> None:
     async with auth_client(FakeAuthClient()) as (client, _):
         response = await client.post(
             "/api/v1/auth/login",
@@ -104,12 +104,8 @@ async def test_login_sets_secure_http_only_cookie_without_returning_token() -> N
             },
         )
 
-    assert response.status_code == status.HTTP_200_OK
-    assert response.json() == {
-        "id": str(AUTH_USER_ID),
-        "username": "watcher",
-        "is_admin": False,
-    }
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert response.content == b""
     assert "session-token" not in response.text
     cookie = response.headers["set-cookie"]
     assert "watchtower_session=session-token" in cookie
@@ -148,6 +144,25 @@ async def test_me_lazily_provisions_exactly_one_profile() -> None:
 async def test_missing_session_is_unauthorized() -> None:
     async with auth_client(FakeAuthClient()) as (client, _):
         response = await client.get("/api/v1/auth/me")
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json() == {"detail": "Authentication required"}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/auth/me",
+        "/api/v1/services",
+        f"/api/v1/services/{uuid4()}",
+        "/api/v1/api-keys",
+        f"/api/v1/api-keys/{uuid4()}",
+    ],
+)
+async def test_every_user_information_route_rejects_anonymous_access(path: str) -> None:
+    async with auth_client(FakeAuthClient()) as (client, _):
+        response = await client.get(path)
 
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
     assert response.json() == {"detail": "Authentication required"}
