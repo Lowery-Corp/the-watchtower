@@ -1,1 +1,0 @@
-"""Version-one API dependencies."""

@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${WATCHTOWER_POSTGRES_DB:-watchtower}
+      POSTGRES_USER: ${WATCHTOWER_POSTGRES_USER:-watchtower}
+      POSTGRES_PASSWORD: ${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ./watchtowers-backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./watchtowers-backend/.env
+    working_dir: /app
+    command: python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./watchtowers-backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # frontend:
+  #   build:
+  #     context: ./watchtowersHouse
+  #   expose:
+  #     - ""
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
+  #     interval: 5s
+  #     timeout: 4s
+  #     retries: 12
+  #     start_period: 5s
+
+  # frontend-tools:
+  #   profiles: ["test"]
+  #   build:
+  #     context: ./watchtowersHouse
+  #     target: tools
+  #   command: ["npm", "test"]
+
+  # test:
+  #   profiles: ["test"]
+  #   build:
+  #     context: .
+  #     target: test
+  #   environment:
+  #     WATCHTOWER_DATABASE_URL: postgresql+asyncpg://${WATCHTOWER_POSTGRES_USER:-watchtower}:${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}@db:5432/${WATCHTOWER_POSTGRES_DB:-watchtower}
+  #     WATCHTOWER_ENVIRONMENT: test
+  #   depends_on:
+  #     migrate:
+  #       condition: service_completed_successfully
+
+volumes:
+  postgres-data:
