@@ -14,15 +14,15 @@ def require_admin_user(current_user: AuthorizedUser) -> None:
 
 
 async def get_current_user(
-    access_token: str | None = Cookie(default=None),
+    lowery_token: str | None = Cookie(default=None),
 ) -> AuthorizedUser:
-    if not access_token:
+    if not lowery_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
-    authorized_user = await get_user_from_token(token=access_token)
+    authorized_user = await get_user_from_token(token=lowery_token)
 
     if not authorized_user:
         raise HTTPException(
