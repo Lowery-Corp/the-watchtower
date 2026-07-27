@@ -36,36 +36,22 @@ services:
       postgres:
         condition: service_healthy
 
-  # frontend:
-  #   build:
-  #     context: ./watchtowersHouse
-  #   expose:
-  #     - ""
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/"]
-  #     interval: 5s
-  #     timeout: 4s
-  #     retries: 12
-  #     start_period: 5s
-
-  # frontend-tools:
-  #   profiles: ["test"]
-  #   build:
-  #     context: ./watchtowersHouse
-  #     target: tools
-  #   command: ["npm", "test"]
-
-  # test:
-  #   profiles: ["test"]
-  #   build:
-  #     context: .
-  #     target: test
-  #   environment:
-  #     WATCHTOWER_DATABASE_URL: postgresql+asyncpg://${WATCHTOWER_POSTGRES_USER:-watchtower}:${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}@db:5432/${WATCHTOWER_POSTGRES_DB:-watchtower}
-  #     WATCHTOWER_ENVIRONMENT: test
-  #   depends_on:
-  #     migrate:
-  #       condition: service_completed_successfully
+  frontend:
+    build:
+      context: ./watchtowers-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5174:5173"
+    volumes:
+      - ./watchtowers-frontend:/app
+      - /app/node_modules
+    env_file:
+      - ./watchtowers-frontend/.env
+    restart: always
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+    stdin_open: true
+    tty: true
 
 volumes:
   postgres-data:
