@@ -2,9 +2,10 @@ import { Link, Navigate, Route, Routes } from "react-router";
 import { useAuth } from "./auth/AuthProvider";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserLayout from "./layouts/UserLayout";
-import AuthLayout from "./layouts/AuthLayout";
 import Login from "./pages/Login";
+import RegisterUser from "./pages/Register";
 import About from "./pages/About";
+import Test from "./pages/Test";
 import Unauthorized from "./pages/Unauthorized";
 
 export default function App() {
@@ -88,12 +89,20 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <Link
-                  to="/user/login"
-                  className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
-                >
-                  Login
-                </Link>
+                <>
+                  <Link
+                    to="/user/login"
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                  >
+                    Login
+                  </Link>
+                  <Link
+                    to="/user/create"
+                    className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
+                  >
+                    Create
+                  </Link>
+                </>
               )}
             </div>
           </div>
@@ -104,16 +113,16 @@ export default function App() {
       <main className="flex-1">
         <Routes>
           <Route path="user" element={<UserLayout />}>
-            {/* <Route path="login" element={<Login />} />
-            <Route path="create" element={<CreateUser />} /> */}
+            <Route path="login" element={<Login />} />
+            <Route path="create" element={<RegisterUser />} />
           </Route>
 
           <Route element={<ProtectedRoute />}>
-            <Route path="/" element={<About />} />
+            <Route path="/test" element={<Test />} />
           </Route>
 
-          <Route path="unauthorized" element={<Unauthorized />} />
           <Route path="about" element={<About />} />
+          <Route path="unauthorized" element={<Unauthorized />} />
           <Route path="*" element={<Navigate to="/about" replace />} />
         </Routes>
       </main>

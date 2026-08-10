@@ -1,10 +1,10 @@
 import axios from "axios";
 
-const AUTH_URL = import.meta.env.VITE_SCRAPPYS_SCRAPYARD_URL;
-export const SESSION_EXPIRED_EVENT = "scrappy:session-expired";
+const WATCHTOWER_BACKEND = import.meta.env.VITE_WATCHTOWER_BACKEND_URL;
+export const SESSION_EXPIRED_EVENT = "watchtower:session-expired";
 
 export const api = axios.create({
-  baseURL: AUTH_URL,
+  baseURL: WATCHTOWER_BACKEND,
   withCredentials: true,
 });
 

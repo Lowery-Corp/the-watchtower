@@ -1,3 +1,5 @@
+from typing import Any
+
 from httpx import AsyncClient, Limits, Timeout
 
 http_client = AsyncClient(
@@ -12,3 +14,19 @@ http_client = AsyncClient(
         max_keepalive_connections=20,
     ),
 )
+
+
+async def make_request(
+    method: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+):
+    response = await http_client.request(
+        method=method,
+        url=url,
+        headers=headers,
+        json=body,
+    )
+
+    return response

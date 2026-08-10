@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from starlette.middleware.cors import CORSMiddleware
 from middleware.request_id import RequestIDMiddleware
 from httpxC.http_client import http_client
+from core.config import settings
 
 # from cache.redis import redis_manager
 
@@ -17,7 +18,7 @@ async def lifespan(app: FastAPI):
     await http_client.aclose()
 
 app = FastAPI(
-    title="Scrappy's Scrapyard API",
+    title="The Watchtower API",
     lifespan=lifespan,
 )
 
@@ -25,7 +26,7 @@ app.add_middleware(RequestIDMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

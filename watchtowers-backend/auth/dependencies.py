@@ -1,5 +1,6 @@
 from fastapi import Cookie, HTTPException, status
 
+from core.config import settings
 from repositories.auth import (
     get_user_from_token,
 )
@@ -14,15 +15,15 @@ def require_admin_user(current_user: AuthorizedUser) -> None:
 
 
 async def get_current_user(
-    lowery_token: str | None = Cookie(default=None),
+    access_token: str | None = Cookie(default=None, alias=settings.cookie_key)
 ) -> AuthorizedUser:
-    if not lowery_token:
+    if not access_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
-    authorized_user = await get_user_from_token(token=lowery_token)
+    authorized_user = await get_user_from_token(token=access_token)
 
     if not authorized_user:
         raise HTTPException(

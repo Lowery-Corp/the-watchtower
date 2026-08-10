@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     celery_result_backend: str
     rabbitmq_default_user: str
     rabbitmq_default_pass: str
+    allowed_origins: list[str] = []
+    cookie_key: str
 
     internal_cookie: str | None = None
 
