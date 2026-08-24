@@ -37,7 +37,9 @@ class WebhookUserAuthClient:
 
 
 @asynccontextmanager
-async def managed_webhook_client() -> AsyncIterator[tuple[AsyncClient, async_sessionmaker[AsyncSession]]]:
+async def managed_webhook_client() -> AsyncIterator[
+    tuple[AsyncClient, async_sessionmaker[AsyncSession]]
+]:
     app = create_app(
         Settings(
             environment="test",
@@ -153,23 +155,21 @@ async def test_managed_key_attributes_event_and_outbox_to_profile() -> None:
             },
         )
         assert accepted.status_code == status.HTTP_202_ACCEPTED
-        listed_keys = await client.get(
-            "/api/v1/api-keys", headers=user_auth("user-token-a")
-        )
+        listed_keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
         async with factory() as session:
             event = await session.scalar(
                 select(Event).where(Event.id == UUID(accepted.json()["event_id"]))
             )
+            assert event is not None
             outbox = await session.scalar(
                 select(OutboxMessage).where(OutboxMessage.event_id == event.id)
             )
 
     assert accepted.status_code == status.HTTP_202_ACCEPTED
     assert listed_keys.json()[0]["last_used_at"] is not None
-    assert event is not None
     assert outbox is not None
     assert event.profile_id == outbox.profile_id
-    assert event.service_id == UUID(service["id"])
+    assert event.service_id == UUID(str(service["id"]))
     assert outbox.payload["profile_id"] == str(event.profile_id)
 
 
@@ -223,9 +223,7 @@ async def test_failed_body_validation_does_not_mark_key_used() -> None:
                 "X-Watchtower-API-Key": api_key,
             },
         )
-        keys = await client.get(
-            "/api/v1/api-keys", headers=user_auth("user-token-a")
-        )
+        keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
     assert keys.json()[0]["last_used_at"] is None
@@ -282,9 +280,7 @@ async def test_revoked_key_is_rejected_and_service_binding_is_enforced() -> None
         )
         keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
         key_id = next(item["id"] for item in keys.json() if item["service_id"] == service["id"])
-        await client.delete(
-            f"/api/v1/api-keys/{key_id}", headers=user_auth("user-token-a")
-        )
+        await client.delete(f"/api/v1/api-keys/{key_id}", headers=user_auth("user-token-a"))
         revoked = await client.post(
             "/api/v1/webhooks/events",
             content=event_body(slug),

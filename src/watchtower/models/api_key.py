@@ -5,6 +5,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -13,7 +14,6 @@ from sqlalchemy import (
     SmallInteger,
     String,
     UniqueConstraint,
-    CheckConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -33,9 +33,7 @@ class ApiKey(Base):
             "octet_length(secret_digest) = 32",
             name="ck_api_key_secret_digest_length",
         ),
-        CheckConstraint(
-            "jsonb_typeof(scopes) = 'array'", name="ck_api_key_scopes_array"
-        ),
+        CheckConstraint("jsonb_typeof(scopes) = 'array'", name="ck_api_key_scopes_array"),
         CheckConstraint(
             "expires_at IS NULL OR expires_at > created_at",
             name="ck_api_key_expires_after_creation",
@@ -57,9 +55,7 @@ class ApiKey(Base):
         ForeignKey("watchtower.profile.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    token_version: Mapped[int] = mapped_column(
-        SmallInteger, nullable=False, server_default="1"
-    )
+    token_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="1")
     public_prefix: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     secret_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)

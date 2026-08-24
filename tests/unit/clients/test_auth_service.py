@@ -1,6 +1,6 @@
 """Unit tests for the external authentication service adapter."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 
 import httpx
 import pytest
@@ -13,7 +13,10 @@ from watchtower.clients.auth_service import (
     AuthServiceUnavailable,
 )
 
-Handler = Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]]
+Handler = (
+    Callable[[httpx.Request], httpx.Response]
+    | Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
+)
 
 
 def client_for(handler: Handler) -> tuple[AuthServiceClient, httpx.AsyncClient]:

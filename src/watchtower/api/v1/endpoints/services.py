@@ -33,7 +33,10 @@ router = APIRouter(prefix="/services", tags=["services"])
     response_model=MonitoredServiceRead,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_browser_origin)],
-    responses={401: {"description": "Authentication required"}, 409: {"description": "Slug conflict"}},
+    responses={
+        401: {"description": "Authentication required"},
+        409: {"description": "Slug conflict"},
+    },
 )
 async def create_owned_service(
     payload: MonitoredServiceCreate,
@@ -43,9 +46,7 @@ async def create_owned_service(
     """Create an event-source identity in the current profile."""
 
     try:
-        service = await create_service(
-            session, profile_id=current.profile.id, payload=payload
-        )
+        service = await create_service(session, profile_id=current.profile.id, payload=payload)
     except MonitoredServiceConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -74,11 +75,11 @@ async def get_owned_service(
     """Read one service without revealing other tenants' resources."""
 
     try:
-        service = await get_service(
-            session, profile_id=current.profile.id, service_id=service_id
-        )
+        service = await get_service(session, profile_id=current.profile.id, service_id=service_id)
     except MonitoredServiceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
+        ) from exc
     return MonitoredServiceRead.model_validate(service)
 
 
@@ -103,7 +104,9 @@ async def update_owned_service(
             payload=payload,
         )
     except MonitoredServiceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
+        ) from exc
     return MonitoredServiceRead.model_validate(service)
 
 
@@ -120,9 +123,9 @@ async def delete_owned_service(
     """Deactivate one service while retaining its historical events."""
 
     try:
-        await deactivate_service(
-            session, profile_id=current.profile.id, service_id=service_id
-        )
+        await deactivate_service(session, profile_id=current.profile.id, service_id=service_id)
     except MonitoredServiceNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found") from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
+        ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

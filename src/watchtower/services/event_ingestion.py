@@ -9,7 +9,6 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from watchtower.core.api_keys import verify_api_key
-
 from watchtower.messaging.topics import RAW_EVENTS_TOPIC
 from watchtower.repositories.api_keys import get_api_key_for_ingestion
 from watchtower.repositories.events import create_event_if_absent
@@ -77,14 +76,9 @@ async def ingest_event(
             if (
                 managed_key is None
                 or managed_key.token_version != 1
-                or not verify_api_key(
-                    api_key_token.get_secret_value(), managed_key.secret_digest
-                )
+                or not verify_api_key(api_key_token.get_secret_value(), managed_key.secret_digest)
                 or managed_key.revoked_at is not None
-                or (
-                    managed_key.expires_at is not None
-                    and managed_key.expires_at <= now
-                )
+                or (managed_key.expires_at is not None and managed_key.expires_at <= now)
                 or "events:write" not in managed_key.scopes
             ):
                 raise ManagedKeyAuthenticationError("Managed key is no longer valid")
@@ -100,10 +94,7 @@ async def ingest_event(
             raise InactiveSourceError("Event source is not active")
         if managed_key is not None and (
             managed_key.profile_id != profile_id
-            or (
-                managed_key.service_id is not None
-                and managed_key.service_id != service.id
-            )
+            or (managed_key.service_id is not None and managed_key.service_id != service.id)
         ):
             raise ManagedKeyAuthenticationError("Managed key binding is invalid")
 
@@ -118,9 +109,7 @@ async def ingest_event(
         )
         if not created:
             if event.payload != raw_payload:
-                raise EventConflictError(
-                    "Source event ID already exists with different content"
-                )
+                raise EventConflictError("Source event ID already exists with different content")
             if managed_key is not None:
                 managed_key.last_used_at = datetime.now(UTC)
                 await session.flush()

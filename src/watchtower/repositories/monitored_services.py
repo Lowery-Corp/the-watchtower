@@ -41,12 +41,14 @@ async def get_monitored_service_by_slug(
 ) -> MonitoredService | None:
     """Return a service only inside the requested profile."""
 
-    return await session.scalar(
-        select(MonitoredService).where(
-            MonitoredService.profile_id == profile_id,
-            MonitoredService.slug == slug,
+    return (
+        await session.scalars(
+            select(MonitoredService).where(
+                MonitoredService.profile_id == profile_id,
+                MonitoredService.slug == slug,
+            )
         )
-    )
+    ).one_or_none()
 
 
 async def get_monitored_service_by_id(
@@ -57,12 +59,14 @@ async def get_monitored_service_by_id(
 ) -> MonitoredService | None:
     """Return a service by ID without crossing a profile boundary."""
 
-    return await session.scalar(
-        select(MonitoredService).where(
-            MonitoredService.profile_id == profile_id,
-            MonitoredService.id == service_id,
+    return (
+        await session.scalars(
+            select(MonitoredService).where(
+                MonitoredService.profile_id == profile_id,
+                MonitoredService.id == service_id,
+            )
         )
-    )
+    ).one_or_none()
 
 
 async def list_monitored_services(

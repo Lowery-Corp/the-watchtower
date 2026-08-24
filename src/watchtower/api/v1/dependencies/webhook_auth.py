@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from secrets import token_urlsafe
-from typing import cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -109,12 +109,8 @@ async def _authenticate_managed_key(
 
     now = datetime.now(UTC)
     async with session.begin():
-        api_key = await get_api_key_by_prefix(
-            session, public_prefix=parsed.public_prefix
-        )
-        expected_digest = (
-            api_key.secret_digest if api_key is not None else _DUMMY_API_KEY_DIGEST
-        )
+        api_key = await get_api_key_by_prefix(session, public_prefix=parsed.public_prefix)
+        expected_digest = api_key.secret_digest if api_key is not None else _DUMMY_API_KEY_DIGEST
         verified = verify_api_key(token, expected_digest)
         if (
             api_key is None
@@ -142,7 +138,7 @@ async def _authenticate_managed_key(
 
 async def authenticate_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> AuthenticatedWebhook:
     """Authenticate managed API keys or explicitly mapped legacy HMAC senders."""
 
@@ -187,8 +183,8 @@ async def authenticate_webhook(
         raise _unauthorized(exc) from exc
 
     configured_secret = settings.webhook_secrets.get(source)
-    profile_id = settings.legacy_webhook_profiles.get(source)
-    if configured_secret is None or profile_id is None:
+    legacy_profile_id = settings.legacy_webhook_profiles.get(source)
+    if configured_secret is None or legacy_profile_id is None:
         raise _unauthorized()
 
     body = await read_limited_body(request, settings.max_webhook_body_bytes)
@@ -204,5 +200,5 @@ async def authenticate_webhook(
     except WebhookAuthenticationError as exc:
         raise _unauthorized(exc) from exc
 
-    await _consume_rate_limit(request, f"legacy:{profile_id}:{source}")
-    return AuthenticatedWebhook(profile_id=profile_id, source=source, body=body)
+    await _consume_rate_limit(request, f"legacy:{legacy_profile_id}:{source}")
+    return AuthenticatedWebhook(profile_id=legacy_profile_id, source=source, body=body)

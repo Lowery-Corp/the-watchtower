@@ -3,8 +3,8 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
 import httpx
+from fastapi import FastAPI
 
 from watchtower import __version__
 from watchtower.api.v1.api import router as api_v1_router

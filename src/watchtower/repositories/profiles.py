@@ -27,9 +27,7 @@ async def get_or_create_profile(
     if created is not None:
         return created
 
-    existing = await session.scalar(
-        select(Profile).where(Profile.auth_user_id == auth_user_id)
-    )
+    existing = await session.scalar(select(Profile).where(Profile.auth_user_id == auth_user_id))
     if existing is None:
         raise RuntimeError("Profile provisioning did not produce a profile")
     return existing
@@ -41,6 +39,6 @@ async def get_profile_by_auth_user_id(
 ) -> Profile | None:
     """Return a Watchtower profile by external auth identity."""
 
-    return await session.scalar(
-        select(Profile).where(Profile.auth_user_id == auth_user_id)
-    )
+    return (
+        await session.scalars(select(Profile).where(Profile.auth_user_id == auth_user_id))
+    ).one_or_none()
