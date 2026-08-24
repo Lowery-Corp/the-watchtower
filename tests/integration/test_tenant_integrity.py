@@ -5,10 +5,11 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from watchtower.db.session import create_async_database_engine, create_session_factory
+from watchtower.models.api_key import ApiKey
 from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
@@ -46,9 +47,7 @@ async def test_same_service_slug_is_allowed_in_different_profiles() -> None:
         async with factory() as session:
             async with session.begin():
                 for profile_id in profile_ids:
-                    session.add(
-                        Profile(id=profile_id, auth_user_id=uuid4(), display_name="Tenant")
-                    )
+                    session.add(Profile(id=profile_id, auth_user_id=uuid4(), display_name="Tenant"))
                 await session.flush()
                 for profile_id in profile_ids:
                     session.add(
@@ -65,13 +64,9 @@ async def test_same_service_slug_is_allowed_in_different_profiles() -> None:
         async with factory() as session:
             async with session.begin():
                 await session.execute(
-                    delete(MonitoredService).where(
-                        MonitoredService.profile_id.in_(profile_ids)
-                    )
+                    delete(MonitoredService).where(MonitoredService.profile_id.in_(profile_ids))
                 )
-                await session.execute(
-                    delete(Profile).where(Profile.id.in_(profile_ids))
-                )
+                await session.execute(delete(Profile).where(Profile.id.in_(profile_ids)))
         await engine.dispose()
 
 
@@ -169,4 +164,45 @@ async def test_outbox_event_profile_mismatch_is_rejected() -> None:
                 await session.execute(
                     delete(Profile).where(Profile.id.in_([profile_a.id, profile_b.id]))
                 )
+        await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_profile_deletion_is_restricted_while_api_key_history_exists() -> None:
+    engine = create_async_database_engine(DATABASE_URL)
+    factory = create_session_factory(DATABASE_URL, engine=engine)
+    profile = Profile(id=uuid4(), auth_user_id=uuid4(), display_name="Key owner")
+    api_key = ApiKey(
+        profile_id=profile.id,
+        name=f"retained-{uuid4().hex}",
+        public_prefix=f"wt_{uuid4().hex[:16]}",
+        secret_digest=uuid4().bytes + uuid4().bytes,
+        scopes=["events:write"],
+    )
+
+    try:
+        async with factory() as session:
+            async with session.begin():
+                session.add(profile)
+                await session.flush()
+                session.add(api_key)
+
+        async with factory() as session:
+            with pytest.raises(IntegrityError):
+                async with session.begin():
+                    await session.execute(delete(Profile).where(Profile.id == profile.id))
+
+        async with factory() as session:
+            assert (
+                await session.scalar(select(Profile.id).where(Profile.id == profile.id))
+                == profile.id
+            )
+            assert (
+                await session.scalar(select(ApiKey.id).where(ApiKey.id == api_key.id)) == api_key.id
+            )
+    finally:
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(delete(ApiKey).where(ApiKey.id == api_key.id))
+                await session.execute(delete(Profile).where(Profile.id == profile.id))
         await engine.dispose()

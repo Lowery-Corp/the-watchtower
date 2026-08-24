@@ -52,7 +52,7 @@ class ApiKey(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     profile_id: Mapped[UUID] = mapped_column(
-        ForeignKey("watchtower.profile.id", ondelete="CASCADE"), nullable=False
+        ForeignKey("watchtower.profile.id", ondelete="RESTRICT"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     token_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="1")

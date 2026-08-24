@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette import status
 
@@ -21,6 +21,7 @@ from watchtower.clients.auth_service import (
 )
 from watchtower.core.config import Settings
 from watchtower.main import create_app
+from watchtower.models.api_key import ApiKey
 from watchtower.models.profile import Profile
 from watchtower.schemas.auth import AuthenticatedSession, AuthenticatedUser
 
@@ -88,6 +89,10 @@ async def auth_client(
             finally:
                 async with factory() as session:
                     async with session.begin():
+                        profile_ids = select(Profile.id).where(Profile.auth_user_id == AUTH_USER_ID)
+                        await session.execute(
+                            delete(ApiKey).where(ApiKey.profile_id.in_(profile_ids))
+                        )
                         await session.execute(
                             delete(Profile).where(Profile.auth_user_id == AUTH_USER_ID)
                         )
@@ -126,9 +131,7 @@ async def test_me_lazily_provisions_exactly_one_profile() -> None:
             profile_rows = list(
                 (
                     await session.scalars(
-                        Profile.__table__.select().where(
-                            Profile.auth_user_id == AUTH_USER_ID
-                        )
+                        Profile.__table__.select().where(Profile.auth_user_id == AUTH_USER_ID)
                     )
                 ).all()
             )
