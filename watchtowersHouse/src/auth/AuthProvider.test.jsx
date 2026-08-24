@@ -190,7 +190,7 @@ describe("browser authentication", () => {
     expect(screen.getByRole("button", { name: /sign in/i })).toBeVisible();
   });
 
-  it("does not claim logout succeeded when the cookie-clearing request is unreachable", async () => {
+  it("keeps the logout control from calling the deferred logout flow", async () => {
     getCurrentUser.mockResolvedValue({
       id: "user-1",
       username: "watcher@example.com",
@@ -198,7 +198,6 @@ describe("browser authentication", () => {
       profile_id: "profile-1",
       display_name: "Night Watch",
     });
-    logoutSession.mockRejectedValue(new Error("Network Error"));
 
     render(
       <MemoryRouter initialEntries={["/home"]}>
@@ -208,7 +207,8 @@ describe("browser authentication", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /sign out/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be confirmed/i);
+    expect(logoutSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /welcome back/i })).toBeVisible();
   });
 });
