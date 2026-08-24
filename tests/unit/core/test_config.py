@@ -3,6 +3,14 @@ from pytest import MonkeyPatch
 from watchtower.core.config import Settings
 
 
+def test_default_auth_service_uses_required_https_origin(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("WATCHTOWER_AUTH_SERVICE_URL", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.auth_service_url == "https://dauth.johnmgrubbs.io"
+
+
 def test_settings_read_watchtower_environment(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("WATCHTOWER_ENVIRONMENT", "test")
     monkeypatch.setenv(

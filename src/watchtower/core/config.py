@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://watchtower:watchtower@db:5432/watchtower"
     )
-    auth_service_url: str = "http://100.97.236.10:8000"
+    auth_service_url: str = "https://dauth.johnmgrubbs.io"
     auth_service_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     session_cookie_name: str = Field(default="watchtower_session", min_length=1, max_length=64)
     session_cookie_max_age_seconds: int = Field(default=3600, ge=60, le=86_400)
