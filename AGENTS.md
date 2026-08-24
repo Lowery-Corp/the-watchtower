@@ -297,6 +297,8 @@ POST /api/v1/auth/logout
 GET  /api/v1/auth/me
 POST/GET /api/v1/services
 GET/PATCH/DELETE /api/v1/services/{service_id}
+GET /api/v1/services/{service_id}/memberships
+PUT/DELETE /api/v1/services/{service_id}/memberships/{profile_id}
 POST/GET /api/v1/api-keys
 GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 ```
@@ -313,7 +315,7 @@ Purpose: durable local tenant root keyed by the external auth service's stable s
 
 ### `role`, `permission`, `role_permission`, and `profile_role`
 
-Purpose: durable normalized human authorization metadata. PostgreSQL is the source of truth. The permission catalog is closed to `profiles.read`, `profiles.manage`, `applications.read`, `applications.manage`, `memberships.manage`, `api_keys.read`, `api_keys.manage`, and `events.read`; deterministic UUID seeds and restrictive foreign keys make role grants stable and explicit. `watchtower_admin` receives every permission, `app_admin` receives application/key management, membership management, and event read access, and `viewer` receives application/event read access. Monitored-service/application list and read operations now resolve `applications.read` from these tables, while update and activation operations resolve `applications.manage`; global administrators apply across applications and scoped roles apply only to their assigned application. Any active profile may create an application, and creation atomically grants that creator `app_admin` in the same PostgreSQL transaction. Human management permissions are intentionally separate from machine API-key ingestion scopes; neither credential class substitutes for the other.
+Purpose: durable normalized human authorization metadata. PostgreSQL is the source of truth. The permission catalog is closed to `profiles.read`, `profiles.manage`, `applications.read`, `applications.manage`, `memberships.manage`, `api_keys.read`, `api_keys.manage`, and `events.read`; deterministic UUID seeds and restrictive foreign keys make role grants stable and explicit. `watchtower_admin` receives every permission, `app_admin` receives application/key management, membership management, and event read access, and `viewer` receives application/event read access. Monitored-service/application list and read operations resolve `applications.read` from these tables, while update and activation operations resolve `applications.manage`; global administrators apply across applications and scoped roles apply only to their assigned application. Membership APIs resolve `memberships.manage` in PostgreSQL and may assign only application-scoped `app_admin` or `viewer`. PUT normalizes a target to exactly one role, preserves an unchanged assignment, and otherwise derives a UUIDv5 with namespace `fe2ed8dc-d070-5687-9b68-51356c0fe51f` from `{application_id}:{profile_id}:{role}`; mutations lock the monitored-service row and retain at least one local `app_admin`, regardless of global admins. Any active profile may create an application, and creation atomically grants that creator `app_admin` in the same PostgreSQL transaction. Human management permissions are intentionally separate from machine API-key ingestion scopes; neither credential class substitutes for the other.
 
 ### `api_key`
 

@@ -24,6 +24,9 @@ from watchtower.models.role import (
     VIEWER_ROLE_ID,
     WATCHTOWER_ADMIN_ROLE_ID,
 )
+from watchtower.repositories.application_memberships import (
+    application_membership_assignment_id,
+)
 from watchtower.schemas.auth import AuthenticatedUser
 
 DATABASE_URL = os.environ.get(
@@ -152,6 +155,26 @@ async def assign_test_roles(
                     ),
                 ]
             )
+
+
+async def provisioned_profile_ids(
+    client: AsyncClient,
+    factory: async_sessionmaker[AsyncSession],
+    *tokens: str,
+) -> dict[str, UUID]:
+    for token in tokens:
+        response = await client.get("/api/v1/services", headers=auth(token))
+        assert response.status_code == status.HTTP_200_OK
+    async with factory() as session:
+        rows = (
+            await session.execute(
+                select(Profile.id, Profile.auth_user_id).where(
+                    Profile.auth_user_id.in_([USERS[token].id for token in tokens])
+                )
+            )
+        ).all()
+    by_user = {auth_user_id: profile_id for profile_id, auth_user_id in rows}
+    return {token: by_user[USERS[token].id] for token in tokens}
 
 
 @pytest.mark.integration
@@ -336,3 +359,321 @@ def test_application_openapi_documents_forbidden_responses() -> None:
         assert paths[path][method]["responses"]["403"]["description"] == (
             "Application access denied"
         )
+
+    membership_path = "/api/v1/services/{service_id}/memberships"
+    member_path = "/api/v1/services/{service_id}/memberships/{profile_id}"
+    assert paths[membership_path]["get"]["responses"]["403"]["description"] == (
+        "Application access denied"
+    )
+    for method in ("put", "delete"):
+        assert paths[member_path][method]["responses"]["403"]["description"] == (
+            "Application access denied"
+        )
+    assert paths[member_path]["put"]["responses"]["409"]["description"] == (
+        "Application must retain an app_admin"
+    )
+    assert paths[member_path]["delete"]["responses"]["409"]["description"] == (
+        "Application must retain an app_admin"
+    )
+
+
+@pytest.mark.integration
+async def test_creator_can_list_application_memberships() -> None:
+    async with service_client() as (client, _factory):
+        created = await client.post(
+            "/api/v1/services",
+            json=payload("Membership list"),
+            headers=auth("owner"),
+        )
+        service_id = UUID(created.json()["id"])
+
+        response = await client.get(
+            f"/api/v1/services/{service_id}/memberships",
+            headers=auth("owner"),
+        )
+        creator_membership = response.json()[0]
+        unchanged = await client.put(
+            f"/api/v1/services/{service_id}/memberships/{creator_membership['profile_id']}",
+            json={"role": "app_admin"},
+            headers=auth("owner"),
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == [
+        {
+            "id": response.json()[0]["id"],
+            "profile_id": response.json()[0]["profile_id"],
+            "role": "app_admin",
+            "granted_by_profile_id": response.json()[0]["profile_id"],
+            "granted_at": response.json()[0]["granted_at"],
+        }
+    ]
+    assert unchanged.status_code == status.HTTP_200_OK
+    assert unchanged.json() == creator_membership
+
+
+@pytest.mark.integration
+async def test_application_admin_can_set_viewer_membership_with_grant_metadata() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services",
+            json=payload("Membership set"),
+            headers=auth("owner"),
+        )
+        service_id = UUID(created.json()["id"])
+        await client.get("/api/v1/services", headers=auth("viewer"))
+        async with factory() as session:
+            owner_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USERS["owner"].id)
+            )
+            viewer_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USERS["viewer"].id)
+            )
+        assert owner_id is not None
+        assert viewer_id is not None
+
+        response = await client.put(
+            f"/api/v1/services/{service_id}/memberships/{viewer_id}",
+            json={"role": "viewer"},
+            headers=auth("owner"),
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["profile_id"] == str(viewer_id)
+    assert response.json()["role"] == "viewer"
+    assert response.json()["granted_by_profile_id"] == str(owner_id)
+    assert response.json()["granted_at"] is not None
+
+
+@pytest.mark.integration
+async def test_last_application_admin_cannot_remove_own_membership() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services",
+            json=payload("Last admin"),
+            headers=auth("owner"),
+        )
+        service_id = UUID(created.json()["id"])
+        async with factory() as session:
+            owner_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USERS["owner"].id)
+            )
+        assert owner_id is not None
+
+        response = await client.delete(
+            f"/api/v1/services/{service_id}/memberships/{owner_id}",
+            headers=auth("owner"),
+        )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert response.json() == {"detail": "Application must retain an app_admin"}
+
+
+@pytest.mark.integration
+async def test_set_is_idempotent_and_normalizes_legacy_duplicate_roles() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services", json=payload("Normalize"), headers=auth("owner")
+        )
+        service_id = UUID(created.json()["id"])
+        ids = await provisioned_profile_ids(client, factory, "owner", "viewer")
+        url = f"/api/v1/services/{service_id}/memberships/{ids['viewer']}"
+        first = await client.put(url, json={"role": "viewer"}, headers=auth("owner"))
+        second = await client.put(url, json={"role": "viewer"}, headers=auth("owner"))
+        assert first.json() == second.json()
+        assert UUID(first.json()["id"]) == application_membership_assignment_id(
+            application_id=service_id, profile_id=ids["viewer"], role="viewer"
+        )
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    ProfileRole(
+                        profile_id=ids["viewer"],
+                        role_id=APP_ADMIN_ROLE_ID,
+                        role_scope_kind="application",
+                        application_id=service_id,
+                        granted_by_profile_id=ids["owner"],
+                    )
+                )
+        normalized = await client.put(url, json={"role": "viewer"}, headers=auth("owner"))
+        async with factory() as session:
+            roles = list(
+                await session.scalars(
+                    select(ProfileRole.role_id).where(
+                        ProfileRole.application_id == service_id,
+                        ProfileRole.profile_id == ids["viewer"],
+                    )
+                )
+            )
+
+    assert normalized.status_code == status.HTTP_200_OK
+    assert normalized.json() == first.json()
+    assert roles == [VIEWER_ROLE_ID]
+
+
+@pytest.mark.integration
+async def test_two_admins_allow_demotion_and_removal_but_not_final_demotion() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services", json=payload("Two admins"), headers=auth("owner")
+        )
+        service_id = UUID(created.json()["id"])
+        ids = await provisioned_profile_ids(client, factory, "owner", "app-admin")
+        member_url = f"/api/v1/services/{service_id}/memberships/{ids['app-admin']}"
+        promoted = await client.put(member_url, json={"role": "app_admin"}, headers=auth("owner"))
+        demoted = await client.put(member_url, json={"role": "viewer"}, headers=auth("owner"))
+        final_demotion = await client.put(
+            f"/api/v1/services/{service_id}/memberships/{ids['owner']}",
+            json={"role": "viewer"},
+            headers=auth("owner"),
+        )
+        promoted_again = await client.put(
+            member_url, json={"role": "app_admin"}, headers=auth("owner")
+        )
+        removed = await client.delete(member_url, headers=auth("owner"))
+
+    assert promoted.status_code == status.HTTP_200_OK
+    assert demoted.status_code == status.HTTP_200_OK
+    assert demoted.json()["role"] == "viewer"
+    assert final_demotion.status_code == status.HTTP_409_CONFLICT
+    assert final_demotion.json() == {"detail": "Application must retain an app_admin"}
+    assert promoted_again.status_code == status.HTTP_200_OK
+    assert removed.status_code == status.HTTP_204_NO_CONTENT
+
+
+@pytest.mark.integration
+async def test_membership_authorization_validation_and_missing_resources_are_stable() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services", json=payload("Authorization"), headers=auth("owner")
+        )
+        service_id = UUID(created.json()["id"])
+        ids = await provisioned_profile_ids(
+            client, factory, "owner", "viewer", "unrelated", "global-admin"
+        )
+        await assign_test_roles(client, factory, application_id=service_id)
+        global_list = await client.get(
+            f"/api/v1/services/{service_id}/memberships", headers=auth("global-admin")
+        )
+        scoped_list = await client.get(
+            f"/api/v1/services/{service_id}/memberships", headers=auth("app-admin")
+        )
+        denied = [
+            await client.get(f"/api/v1/services/{service_id}/memberships", headers=auth(token))
+            for token in ("viewer", "unrelated")
+        ]
+        missing_profile = await client.put(
+            f"/api/v1/services/{service_id}/memberships/{uuid4()}",
+            json={"role": "viewer"},
+            headers=auth("owner"),
+        )
+        missing_application = await client.get(
+            f"/api/v1/services/{uuid4()}/memberships", headers=auth("global-admin")
+        )
+        invalid = await client.put(
+            f"/api/v1/services/{service_id}/memberships/{ids['unrelated']}",
+            json={"role": "watchtower_admin"},
+            headers=auth("owner"),
+        )
+        denied_mutations = [
+            await client.put(
+                f"/api/v1/services/{service_id}/memberships/{ids['unrelated']}",
+                json={"role": "viewer"},
+                headers=auth(token),
+            )
+            for token in ("viewer", "unrelated")
+        ]
+
+    assert global_list.status_code == status.HTTP_200_OK
+    assert scoped_list.status_code == status.HTTP_200_OK
+    for response in denied + denied_mutations:
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.json() == {"detail": "Application access denied"}
+    assert missing_profile.status_code == status.HTTP_404_NOT_FOUND
+    assert missing_profile.json() == {"detail": "Profile not found"}
+    assert missing_application.status_code == status.HTTP_404_NOT_FOUND
+    assert missing_application.json() == {"detail": "Application not found"}
+    assert invalid.status_code == 422
+
+
+@pytest.mark.integration
+async def test_concurrent_global_admin_removals_retain_one_local_admin() -> None:
+    async with service_client() as (client, factory):
+        created = await client.post(
+            "/api/v1/services", json=payload("Concurrent admins"), headers=auth("owner")
+        )
+        service_id = UUID(created.json()["id"])
+        ids = await provisioned_profile_ids(client, factory, "owner", "app-admin", "global-admin")
+        await assign_test_roles(client, factory, application_id=service_id)
+        responses = await asyncio.gather(
+            client.delete(
+                f"/api/v1/services/{service_id}/memberships/{ids['owner']}",
+                headers=auth("global-admin"),
+            ),
+            client.delete(
+                f"/api/v1/services/{service_id}/memberships/{ids['app-admin']}",
+                headers=auth("global-admin"),
+            ),
+        )
+        async with factory() as session:
+            remaining = list(
+                await session.scalars(
+                    select(ProfileRole).where(
+                        ProfileRole.application_id == service_id,
+                        ProfileRole.role_id == APP_ADMIN_ROLE_ID,
+                    )
+                )
+            )
+
+    assert sorted(response.status_code for response in responses) == [204, 409]
+    assert len(remaining) == 1
+
+
+@pytest.mark.integration
+async def test_deterministic_id_collision_rolls_back_and_isolates_other_application() -> None:
+    async with service_client() as (client, factory):
+        first = await client.post(
+            "/api/v1/services", json=payload("Collision target"), headers=auth("owner")
+        )
+        second = await client.post(
+            "/api/v1/services", json=payload("Collision source"), headers=auth("owner")
+        )
+        first_id = UUID(first.json()["id"])
+        second_id = UUID(second.json()["id"])
+        ids = await provisioned_profile_ids(client, factory, "owner", "viewer", "unrelated")
+        target_url = f"/api/v1/services/{first_id}/memberships/{ids['viewer']}"
+        existing = await client.put(target_url, json={"role": "viewer"}, headers=auth("owner"))
+        collision_id = application_membership_assignment_id(
+            application_id=first_id,
+            profile_id=ids["viewer"],
+            role="app_admin",
+        )
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    ProfileRole(
+                        id=collision_id,
+                        profile_id=ids["unrelated"],
+                        role_id=VIEWER_ROLE_ID,
+                        role_scope_kind="application",
+                        application_id=second_id,
+                        granted_by_profile_id=ids["owner"],
+                    )
+                )
+        failed = await client.put(target_url, json={"role": "app_admin"}, headers=auth("owner"))
+        async with factory() as session:
+            first_roles = list(
+                await session.scalars(
+                    select(ProfileRole.role_id).where(
+                        ProfileRole.application_id == first_id,
+                        ProfileRole.profile_id == ids["viewer"],
+                    )
+                )
+            )
+            collision = await session.get(ProfileRole, collision_id)
+
+    assert existing.status_code == status.HTTP_200_OK
+    assert failed.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert first_roles == [VIEWER_ROLE_ID]
+    assert collision is not None
+    assert collision.application_id == second_id
