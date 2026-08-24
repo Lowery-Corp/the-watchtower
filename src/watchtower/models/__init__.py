@@ -5,6 +5,8 @@ from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
+from watchtower.models.profile_role import ProfileRole
+from watchtower.models.role import Role
 from watchtower.models.webhook_rate_limit import WebhookRateLimit
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "MonitoredService",
     "OutboxMessage",
     "Profile",
+    "ProfileRole",
+    "Role",
     "WebhookRateLimit",
 ]
