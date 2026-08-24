@@ -21,7 +21,11 @@ from watchtower.services.api_keys import (
     update_profile_api_key,
 )
 
-router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+router = APIRouter(
+    prefix="/api-keys",
+    tags=["api-keys"],
+    responses={403: {"description": "Profile access denied"}},
+)
 
 
 def _not_found(exc: ApiKeyNotFoundError) -> HTTPException:
@@ -133,9 +137,7 @@ async def delete_owned_api_key(
     """Soft-revoke one key owned by the current profile."""
 
     try:
-        await revoke_api_key(
-            session, profile_id=current.profile.id, api_key_id=api_key_id
-        )
+        await revoke_api_key(session, profile_id=current.profile.id, api_key_id=api_key_id)
     except ApiKeyNotFoundError as exc:
         raise _not_found(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -103,13 +103,14 @@ The committed tenant/auth/frontend milestone adds:
 
 - Typed, fail-closed external-auth client and browser login/logout/current-user routes.
 - One local profile per stable external identity UUID, provisioned idempotently.
+- PostgreSQL-enforced `active`/`suspended` profile access state and database-timed `last_authenticated_at`; successful DAuth validation never reactivates a suspended profile.
 - Profile ownership for monitored services, events, outbox rows, and API keys, enforced in repository predicates and PostgreSQL constraints.
 - Authenticated profile-scoped service and API-key management routes; cross-profile probes behave as not found.
 - Digest-only, one-time-disclosed managed API keys using versioned high-entropy tokens, a non-secret lookup prefix, domain-separated SHA-256 verification, constant-time comparison, optional immutable service binding, expiry, and irreversible soft revocation.
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, and `0011_api_key_owner_restrict`.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, and `0012_profile_auth_metadata`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
 - The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
 - Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.

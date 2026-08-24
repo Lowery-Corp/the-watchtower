@@ -25,7 +25,11 @@ from watchtower.services.monitored_services import (
     update_service,
 )
 
-router = APIRouter(prefix="/services", tags=["services"])
+router = APIRouter(
+    prefix="/services",
+    tags=["services"],
+    responses={403: {"description": "Profile access denied"}},
+)
 
 
 @router.post(

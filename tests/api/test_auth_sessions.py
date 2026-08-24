@@ -22,6 +22,9 @@ from watchtower.clients.auth_service import (
 from watchtower.core.config import Settings
 from watchtower.main import create_app
 from watchtower.models.api_key import ApiKey
+from watchtower.models.event import Event
+from watchtower.models.monitored_service import MonitoredService
+from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
 from watchtower.schemas.auth import AuthenticatedSession, AuthenticatedUser
 
@@ -90,8 +93,27 @@ async def auth_client(
                 async with factory() as session:
                     async with session.begin():
                         profile_ids = select(Profile.id).where(Profile.auth_user_id == AUTH_USER_ID)
+                        service_ids = select(MonitoredService.id).where(
+                            MonitoredService.profile_id.in_(profile_ids)
+                        )
+                        event_ids = select(Event.id).where(Event.profile_id.in_(profile_ids))
+                        await session.execute(
+                            delete(OutboxMessage).where(
+                                (OutboxMessage.profile_id.in_(profile_ids))
+                                | (OutboxMessage.service_id.in_(service_ids))
+                                | (OutboxMessage.event_id.in_(event_ids))
+                            )
+                        )
+                        await session.execute(
+                            delete(Event).where(Event.profile_id.in_(profile_ids))
+                        )
                         await session.execute(
                             delete(ApiKey).where(ApiKey.profile_id.in_(profile_ids))
+                        )
+                        await session.execute(
+                            delete(MonitoredService).where(
+                                MonitoredService.profile_id.in_(profile_ids)
+                            )
                         )
                         await session.execute(
                             delete(Profile).where(Profile.auth_user_id == AUTH_USER_ID)
@@ -100,7 +122,7 @@ async def auth_client(
 
 @pytest.mark.integration
 async def test_login_sets_secure_http_only_cookie_without_returning_user_info() -> None:
-    async with auth_client(FakeAuthClient()) as (client, _):
+    async with auth_client(FakeAuthClient()) as (client, factory):
         response = await client.post(
             "/api/v1/auth/login",
             json={
@@ -108,8 +130,14 @@ async def test_login_sets_secure_http_only_cookie_without_returning_user_info() 
                 "password": "integration-password",
             },
         )
+        async with factory() as session:
+            profile = await session.scalar(
+                select(Profile).where(Profile.auth_user_id == AUTH_USER_ID)
+            )
 
     assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert profile is not None
+    assert profile.last_authenticated_at is not None
     assert response.content == b""
     assert "session-token" not in response.text
     cookie = response.headers["set-cookie"]
@@ -141,6 +169,113 @@ async def test_me_lazily_provisions_exactly_one_profile() -> None:
     assert first.json()["profile_id"] == second.json()["profile_id"]
     assert first.json()["username"] == "watcher"
     assert len(profile_rows) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/auth/me",
+        "/api/v1/services",
+        "/api/v1/api-keys",
+    ],
+)
+async def test_suspended_profile_is_rejected_by_human_protected_paths(path: str) -> None:
+    fake = FakeAuthClient()
+    async with auth_client(fake) as (client, factory):
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    Profile(
+                        auth_user_id=AUTH_USER_ID,
+                        display_name="Suspended watcher",
+                        status="suspended",
+                    )
+                )
+        response = await client.get(path, headers={"Authorization": "Bearer explicit-token"})
+        async with factory() as session:
+            persisted_status = await session.scalar(
+                select(Profile.status).where(Profile.auth_user_id == AUTH_USER_ID)
+            )
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert response.json() == {"detail": "Profile access denied"}
+    assert persisted_status == "suspended"
+
+
+@pytest.mark.integration
+async def test_suspended_profile_cannot_login_but_can_end_existing_session() -> None:
+    fake = FakeAuthClient()
+    async with auth_client(fake) as (client, factory):
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    Profile(
+                        auth_user_id=AUTH_USER_ID,
+                        display_name="Suspended watcher",
+                        status="suspended",
+                    )
+                )
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": "watcher@example.com",
+                "password": "integration-password",
+            },
+        )
+        client.cookies.set("watchtower_session", "session-token")
+        logout_response = await client.post(
+            "/api/v1/auth/logout",
+            headers={"Origin": "https://watchtower.test"},
+        )
+
+    assert login_response.status_code == status.HTTP_403_FORBIDDEN
+    assert login_response.json() == {"detail": "Profile access denied"}
+    assert "watchtower_session" not in login_response.headers.get("set-cookie", "")
+    assert logout_response.status_code == status.HTTP_204_NO_CONTENT
+    assert fake.logout_tokens == ["session-token", "session-token"]
+    logout_cookie = logout_response.headers["set-cookie"]
+    assert "watchtower_session=" in logout_cookie
+    assert "Max-Age=0" in logout_cookie
+
+
+@pytest.mark.integration
+async def test_logout_clears_cookie_without_prevalidating_stale_session() -> None:
+    fake = FakeAuthClient()
+    fake.me_error = AuthServiceUnauthorized("expired session")
+    fake.logout_error = AuthServiceUnauthorized("expired session")
+    async with auth_client(fake) as (client, _):
+        client.cookies.set("watchtower_session", "session-token")
+        response = await client.post(
+            "/api/v1/auth/logout",
+            headers={"Origin": "https://watchtower.test"},
+        )
+
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    assert fake.me_tokens == []
+    assert fake.logout_tokens == ["session-token"]
+    cookie = response.headers["set-cookie"]
+    assert "watchtower_session=" in cookie
+    assert "Max-Age=0" in cookie
+
+
+@pytest.mark.integration
+async def test_profile_denial_is_documented_for_human_protected_routes() -> None:
+    async with auth_client(FakeAuthClient()) as (client, _):
+        response = await client.get("/api/v1/openapi.json")
+
+    assert response.status_code == status.HTTP_200_OK
+    paths = response.json()["paths"]
+    protected_operations = [
+        operation
+        for path, path_item in paths.items()
+        if path in {"/api/v1/auth/login", "/api/v1/auth/me"}
+        or path.startswith(("/api/v1/services", "/api/v1/api-keys"))
+        for method, operation in path_item.items()
+        if method in {"get", "post", "patch", "delete", "put"}
+    ]
+    assert protected_operations
+    assert all("403" in operation["responses"] for operation in protected_operations)
 
 
 @pytest.mark.integration

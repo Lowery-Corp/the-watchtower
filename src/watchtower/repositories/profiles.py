@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,8 +19,15 @@ async def get_or_create_profile(
 
     statement = (
         insert(Profile)
-        .values(auth_user_id=auth_user_id, display_name=display_name)
-        .on_conflict_do_nothing(index_elements=[Profile.auth_user_id])
+        .values(
+            auth_user_id=auth_user_id,
+            display_name=display_name,
+            last_authenticated_at=func.now(),
+        )
+        .on_conflict_do_update(
+            index_elements=[Profile.auth_user_id],
+            set_={"last_authenticated_at": func.now()},
+        )
         .returning(Profile)
     )
     created = (await session.execute(statement)).scalar_one_or_none()
