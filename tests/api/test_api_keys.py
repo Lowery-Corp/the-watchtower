@@ -18,6 +18,7 @@ from watchtower.main import create_app
 from watchtower.models.api_key import ApiKey
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.profile import Profile
+from watchtower.models.profile_role import ProfileRole
 from watchtower.schemas.auth import AuthenticatedUser
 
 DATABASE_URL = os.environ.get(
@@ -59,14 +60,15 @@ async def key_client() -> AsyncIterator[tuple[AsyncClient, async_sessionmaker[As
                             delete(ApiKey).where(ApiKey.profile_id.in_(profile_ids))
                         )
                         await session.execute(
+                            delete(ProfileRole).where(ProfileRole.profile_id.in_(profile_ids))
+                        )
+                        await session.execute(
                             delete(MonitoredService).where(
                                 MonitoredService.profile_id.in_(profile_ids)
                             )
                         )
                         await session.execute(
-                            delete(Profile).where(
-                                Profile.auth_user_id.in_([USER_A.id, USER_B.id])
-                            )
+                            delete(Profile).where(Profile.auth_user_id.in_([USER_A.id, USER_B.id]))
                         )
 
 
@@ -111,9 +113,7 @@ async def test_keys_are_siloed_and_cross_tenant_ids_return_not_found() -> None:
         )
         key_id = created.json()["id"]
         list_b = await client.get("/api/v1/api-keys", headers=auth("token-b"))
-        hidden = await client.get(
-            f"/api/v1/api-keys/{key_id}", headers=auth("token-b")
-        )
+        hidden = await client.get(f"/api/v1/api-keys/{key_id}", headers=auth("token-b"))
 
     assert list_b.status_code == status.HTTP_200_OK
     assert list_b.json() == []
@@ -138,12 +138,8 @@ async def test_key_can_be_bound_to_owned_service_and_revoked() -> None:
             headers=auth("token-a"),
         )
         key_id = created.json()["id"]
-        revoked = await client.delete(
-            f"/api/v1/api-keys/{key_id}", headers=auth("token-a")
-        )
-        fetched = await client.get(
-            f"/api/v1/api-keys/{key_id}", headers=auth("token-a")
-        )
+        revoked = await client.delete(f"/api/v1/api-keys/{key_id}", headers=auth("token-a"))
+        fetched = await client.get(f"/api/v1/api-keys/{key_id}", headers=auth("token-a"))
 
     assert created.status_code == status.HTTP_201_CREATED
     assert created.json()["service_id"] == service.json()["id"]

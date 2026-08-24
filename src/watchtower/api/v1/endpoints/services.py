@@ -16,6 +16,7 @@ from watchtower.schemas.monitored_service import (
     MonitoredServiceUpdate,
 )
 from watchtower.services.monitored_services import (
+    ApplicationAccessDeniedError,
     MonitoredServiceConflictError,
     MonitoredServiceNotFoundError,
     create_service,
@@ -28,7 +29,7 @@ from watchtower.services.monitored_services import (
 router = APIRouter(
     prefix="/services",
     tags=["services"],
-    responses={403: {"description": "Profile access denied"}},
+    responses={403: {"description": "Application access denied"}},
 )
 
 
@@ -80,6 +81,11 @@ async def get_owned_service(
 
     try:
         service = await get_service(session, profile_id=current.profile.id, service_id=service_id)
+    except ApplicationAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application access denied",
+        ) from exc
     except MonitoredServiceNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
@@ -107,6 +113,11 @@ async def update_owned_service(
             service_id=service_id,
             payload=payload,
         )
+    except ApplicationAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application access denied",
+        ) from exc
     except MonitoredServiceNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"
@@ -128,6 +139,11 @@ async def delete_owned_service(
 
     try:
         await deactivate_service(session, profile_id=current.profile.id, service_id=service_id)
+    except ApplicationAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Application access denied",
+        ) from exc
     except MonitoredServiceNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Service not found"

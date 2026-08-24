@@ -26,6 +26,7 @@ from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
+from watchtower.models.profile_role import ProfileRole
 from watchtower.schemas.auth import AuthenticatedSession, AuthenticatedUser
 
 DATABASE_URL = os.environ.get(
@@ -109,6 +110,9 @@ async def auth_client(
                         )
                         await session.execute(
                             delete(ApiKey).where(ApiKey.profile_id.in_(profile_ids))
+                        )
+                        await session.execute(
+                            delete(ProfileRole).where(ProfileRole.profile_id.in_(profile_ids))
                         )
                         await session.execute(
                             delete(MonitoredService).where(
