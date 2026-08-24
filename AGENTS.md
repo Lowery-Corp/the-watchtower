@@ -110,7 +110,7 @@ The committed tenant/auth/frontend milestone adds:
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, and `0013_watchtower_roles`.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, and `0014_watchtower_permissions`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
 - The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
 - Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.
@@ -310,6 +310,10 @@ Use PostgreSQL schema `watchtower`.
 ### `profile`
 
 Purpose: durable local tenant root keyed by the external auth service's stable subject UUID. Profile deletion is explicit and child-first; tenant roots use restrictive foreign keys rather than accidental cascades.
+
+### `role`, `permission`, `role_permission`, and `profile_role`
+
+Purpose: durable normalized human authorization metadata. PostgreSQL is the source of truth. The permission catalog is closed to `profiles.read`, `profiles.manage`, `applications.read`, `applications.manage`, `memberships.manage`, `api_keys.read`, `api_keys.manage`, and `events.read`; deterministic UUID seeds and restrictive foreign keys make role grants stable and explicit. `watchtower_admin` receives every permission, `app_admin` receives application/key management, membership management, and event read access, and `viewer` receives application/event read access. Human management permissions are intentionally separate from machine API-key ingestion scopes; neither credential class substitutes for the other.
 
 ### `api_key`
 
