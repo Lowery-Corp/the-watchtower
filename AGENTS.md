@@ -94,7 +94,7 @@ The committed `dev` branch includes:
   - `0003_event_outbox`: creates immutable JSONB events and Kafka-ready transactional outbox rows.
   - `0004_outbox_integrity`: enforces event/service identity consistency for every outbox row.
 - Authenticated `POST /api/v1/webhooks/events` using per-service HMAC-SHA256, signed timestamps, constant-time comparison, source binding, and a 256 KiB default body limit.
-- Webhook abuse controls at both boundaries: per-service application budgets and per-IP Nginx edge limits.
+- Webhook abuse controls at both boundaries: shared PostgreSQL fixed-window application budgets keyed by authenticated managed-key UUID or mapped legacy profile/source identity, plus per-IP Nginx edge limits. Per-identity transaction advisory locks make rollover timing safe across replicas; indexed inactive rows older than 24 hours are batch-pruned under nonblocking per-identity advisory locks during later consumption.
 - Idempotency by monitored service plus source event UUID; duplicate retries return the original canonical event and create no additional outbox row.
 - Service-owned event/outbox transactions; repositories never commit.
 - Host port `8010` terminates at the non-root Nginx proxy; FastAPI and PostgreSQL are not published to the host.
@@ -109,7 +109,7 @@ The committed tenant/auth/frontend milestone adds:
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, and `0008_security_hardening`.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, and `0010_rate_limit_retention`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
 - The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
 - Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.

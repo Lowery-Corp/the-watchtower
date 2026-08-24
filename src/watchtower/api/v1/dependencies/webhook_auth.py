@@ -17,7 +17,6 @@ from watchtower.core.api_keys import (
     verify_api_key,
 )
 from watchtower.core.config import Settings
-from watchtower.core.rate_limit import FixedWindowRateLimiter
 from watchtower.core.security import (
     WebhookAuthenticationError,
     validate_service_identity,
@@ -27,6 +26,7 @@ from watchtower.core.security import (
 from watchtower.db.dependencies import get_db_session
 from watchtower.repositories.api_keys import get_api_key_by_prefix
 from watchtower.repositories.monitored_services import get_monitored_service_by_slug
+from watchtower.services.webhook_rate_limits import consume_webhook_rate_limit
 
 _GENERIC_AUTH_ERROR = "Invalid webhook authentication"
 _DUMMY_SECRET = token_urlsafe(32)
@@ -82,9 +82,17 @@ def _unauthorized(exc: Exception | None = None) -> HTTPException:
     )
 
 
-async def _consume_rate_limit(request: Request, identity: str) -> None:
-    limiter = cast(FixedWindowRateLimiter, request.app.state.webhook_rate_limiter)
-    retry_after = await limiter.consume(identity)
+async def _consume_rate_limit(
+    session: AsyncSession,
+    settings: Settings,
+    identity: str,
+) -> None:
+    retry_after = await consume_webhook_rate_limit(
+        session,
+        identity=identity,
+        max_requests=settings.webhook_rate_limit_requests,
+        window_seconds=settings.webhook_rate_limit_window_seconds,
+    )
     if retry_after is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -156,7 +164,7 @@ async def authenticate_webhook(
             source=source,
             token=managed_token,
         )
-        await _consume_rate_limit(request, f"api-key:{api_key_id}")
+        await _consume_rate_limit(session, settings, f"managed:{api_key_id}")
         body = await read_limited_body(request, settings.max_webhook_body_bytes)
         return AuthenticatedWebhook(
             profile_id=profile_id,
@@ -200,5 +208,9 @@ async def authenticate_webhook(
     except WebhookAuthenticationError as exc:
         raise _unauthorized(exc) from exc
 
-    await _consume_rate_limit(request, f"legacy:{legacy_profile_id}:{source}")
+    await _consume_rate_limit(
+        session,
+        settings,
+        f"legacy:{legacy_profile_id}:{source}",
+    )
     return AuthenticatedWebhook(profile_id=legacy_profile_id, source=source, body=body)

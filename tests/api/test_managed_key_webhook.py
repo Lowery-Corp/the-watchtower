@@ -21,6 +21,7 @@ from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
+from watchtower.models.webhook_rate_limit import WebhookRateLimit
 from watchtower.schemas.auth import AuthenticatedUser
 
 DATABASE_URL = os.environ.get(
@@ -67,6 +68,21 @@ async def managed_webhook_client() -> AsyncIterator[
                             ).all()
                         )
                         if profile_ids:
+                            api_key_ids = list(
+                                (
+                                    await session.scalars(
+                                        select(ApiKey.id).where(ApiKey.profile_id.in_(profile_ids))
+                                    )
+                                ).all()
+                            )
+                            if api_key_ids:
+                                await session.execute(
+                                    delete(WebhookRateLimit).where(
+                                        WebhookRateLimit.identity.in_(
+                                            [f"managed:{api_key_id}" for api_key_id in api_key_ids]
+                                        )
+                                    )
+                                )
                             await session.execute(
                                 delete(OutboxMessage).where(
                                     OutboxMessage.profile_id.in_(profile_ids)

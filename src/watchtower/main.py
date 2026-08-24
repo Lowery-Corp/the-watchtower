@@ -11,7 +11,6 @@ from watchtower.api.v1.api import router as api_v1_router
 from watchtower.clients.auth_service import AuthServiceClient
 from watchtower.core.config import Settings, get_settings
 from watchtower.core.logging import configure_logging
-from watchtower.core.rate_limit import FixedWindowRateLimiter
 from watchtower.db.session import create_async_database_engine, create_session_factory
 from watchtower.middleware.request_context import RequestContextMiddleware
 
@@ -47,10 +46,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.auth_client = AuthServiceClient(auth_http_client)
-    app.state.webhook_rate_limiter = FixedWindowRateLimiter(
-        max_requests=resolved_settings.webhook_rate_limit_requests,
-        window_seconds=resolved_settings.webhook_rate_limit_window_seconds,
-    )
     app.add_middleware(RequestContextMiddleware)
     app.include_router(api_v1_router)
     return app
