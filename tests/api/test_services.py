@@ -323,7 +323,7 @@ async def test_application_roles_enforce_list_read_and_manage_boundaries() -> No
 
 
 @pytest.mark.integration
-async def test_application_membership_does_not_authorize_api_key_management() -> None:
+async def test_application_membership_permissions_bound_api_key_management() -> None:
     async with service_client() as (client, factory):
         service = await client.post(
             "/api/v1/services", json=payload("Key boundary"), headers=auth("owner")
@@ -343,7 +343,86 @@ async def test_application_membership_does_not_authorize_api_key_management() ->
     assert key.status_code == status.HTTP_201_CREATED
     assert viewer_list.status_code == status.HTTP_200_OK
     assert viewer_list.json() == []
-    assert viewer_get.status_code == status.HTTP_404_NOT_FOUND
+    assert viewer_get.status_code == status.HTTP_403_FORBIDDEN
+    assert viewer_get.json() == {"detail": "Application access denied"}
+
+
+@pytest.mark.integration
+async def test_api_key_rbac_cross_profile_creator_and_application_name_scope() -> None:
+    async with service_client() as (client, factory):
+        first = await client.post(
+            "/api/v1/services", json=payload("Key RBAC first"), headers=auth("owner")
+        )
+        second = await client.post(
+            "/api/v1/services", json=payload("Key RBAC second"), headers=auth("owner")
+        )
+        first_id = UUID(first.json()["id"])
+        second_id = UUID(second.json()["id"])
+        await assign_test_roles(client, factory, application_id=first_id)
+
+        created_by_app_admin = await client.post(
+            "/api/v1/api-keys",
+            json={"name": "shared-name", "service_id": str(first_id)},
+            headers=auth("app-admin"),
+        )
+        key_id = created_by_app_admin.json()["id"]
+        same_application_conflict = await client.post(
+            "/api/v1/api-keys",
+            json={"name": "shared-name", "service_id": str(first_id)},
+            headers=auth("owner"),
+        )
+        same_name_other_application = await client.post(
+            "/api/v1/api-keys",
+            json={"name": "shared-name", "service_id": str(second_id)},
+            headers=auth("owner"),
+        )
+        app_admin_update = await client.patch(
+            f"/api/v1/api-keys/{key_id}",
+            json={"name": "app-admin-renamed"},
+            headers=auth("app-admin"),
+        )
+        global_update = await client.patch(
+            f"/api/v1/api-keys/{key_id}",
+            json={"name": "global-renamed"},
+            headers=auth("global-admin"),
+        )
+        viewer_update = await client.patch(
+            f"/api/v1/api-keys/{key_id}",
+            json={"name": "viewer-forbidden"},
+            headers=auth("viewer"),
+        )
+        unrelated_get = await client.get(f"/api/v1/api-keys/{key_id}", headers=auth("unrelated"))
+        owner_list = await client.get("/api/v1/api-keys", headers=auth("owner"))
+        app_admin_list = await client.get("/api/v1/api-keys", headers=auth("app-admin"))
+        viewer_list = await client.get("/api/v1/api-keys", headers=auth("viewer"))
+        revoked = await client.delete(f"/api/v1/api-keys/{key_id}", headers=auth("app-admin"))
+
+        async with factory() as session:
+            creator_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USERS["app-admin"].id)
+            )
+            persisted = await session.scalar(select(ApiKey).where(ApiKey.id == UUID(key_id)))
+
+    assert created_by_app_admin.status_code == status.HTTP_201_CREATED
+    assert created_by_app_admin.headers["Cache-Control"] == "no-store"
+    assert same_application_conflict.status_code == status.HTTP_409_CONFLICT
+    assert same_name_other_application.status_code == status.HTTP_201_CREATED
+    assert app_admin_update.status_code == status.HTTP_200_OK
+    assert global_update.status_code == status.HTTP_200_OK
+    for denied in (viewer_update, unrelated_get):
+        assert denied.status_code == status.HTTP_403_FORBIDDEN
+        assert denied.json() == {"detail": "Application access denied"}
+    assert {item["id"] for item in owner_list.json()} == {
+        key_id,
+        same_name_other_application.json()["id"],
+    }
+    assert {item["id"] for item in app_admin_list.json()} == {key_id}
+    assert viewer_list.json() == []
+    assert revoked.status_code == status.HTTP_204_NO_CONTENT
+    assert persisted is not None
+    assert persisted.profile_id == creator_id
+    assert persisted.service_id == first_id
+    assert persisted.revoked_at is not None
 
 
 def test_application_openapi_documents_forbidden_responses() -> None:

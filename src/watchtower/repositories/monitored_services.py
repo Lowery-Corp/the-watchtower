@@ -76,17 +76,17 @@ async def get_monitored_service_by_slug(
     *,
     profile_id: UUID,
     slug: str,
+    for_update: bool = False,
 ) -> MonitoredService | None:
-    """Return a service only inside the requested profile."""
+    """Return a service only inside the requested profile, optionally locking it."""
 
-    return (
-        await session.scalars(
-            select(MonitoredService).where(
-                MonitoredService.profile_id == profile_id,
-                MonitoredService.slug == slug,
-            )
-        )
-    ).one_or_none()
+    statement = select(MonitoredService).where(
+        MonitoredService.profile_id == profile_id,
+        MonitoredService.slug == slug,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return (await session.scalars(statement)).one_or_none()
 
 
 async def get_application_by_id(

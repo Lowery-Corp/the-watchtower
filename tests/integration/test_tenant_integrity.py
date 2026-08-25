@@ -172,8 +172,18 @@ async def test_profile_deletion_is_restricted_while_api_key_history_exists() -> 
     engine = create_async_database_engine(DATABASE_URL)
     factory = create_session_factory(DATABASE_URL, engine=engine)
     profile = Profile(id=uuid4(), auth_user_id=uuid4(), display_name="Key owner")
+    service = MonitoredService(
+        id=uuid4(),
+        profile_id=profile.id,
+        slug=f"retained-{uuid4().hex}",
+        display_name="Retained key service",
+        environment="test",
+        active=True,
+        secret_key_id="legacy",
+    )
     api_key = ApiKey(
         profile_id=profile.id,
+        service_id=service.id,
         name=f"retained-{uuid4().hex}",
         public_prefix=f"wt_{uuid4().hex[:16]}",
         secret_digest=uuid4().bytes + uuid4().bytes,
@@ -184,6 +194,8 @@ async def test_profile_deletion_is_restricted_while_api_key_history_exists() -> 
         async with factory() as session:
             async with session.begin():
                 session.add(profile)
+                await session.flush()
+                session.add(service)
                 await session.flush()
                 session.add(api_key)
 
@@ -204,5 +216,8 @@ async def test_profile_deletion_is_restricted_while_api_key_history_exists() -> 
         async with factory() as session:
             async with session.begin():
                 await session.execute(delete(ApiKey).where(ApiKey.id == api_key.id))
+                await session.execute(
+                    delete(MonitoredService).where(MonitoredService.id == service.id)
+                )
                 await session.execute(delete(Profile).where(Profile.id == profile.id))
         await engine.dispose()

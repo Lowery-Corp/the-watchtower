@@ -110,7 +110,7 @@ The committed tenant/auth/frontend milestone adds:
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, and `0014_watchtower_permissions`.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, `0014_watchtower_permissions`, and `0015_api_key_application_rbac`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
 - The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
 - Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.
@@ -319,7 +319,7 @@ Purpose: durable normalized human authorization metadata. PostgreSQL is the sour
 
 ### `api_key`
 
-Purpose: profile-owned machine credential metadata. Persist only key version, non-secret lookup prefix, fixed-length digest, immutable optional service binding, scopes, expiry/revocation/use timestamps, and audit metadata. Never persist or log the raw token.
+Purpose: application-bound machine credential metadata with durable human creator history. Persist only key version, non-secret lookup prefix, fixed-length digest, required service binding for new keys, scopes, expiry/revocation/use timestamps, and audit metadata. `profile_id` identifies the human creator and restricts profile deletion; `service_id` is the authoritative machine source and tenant binding. PostgreSQL `api_keys.read` and `api_keys.manage` grants control human metadata access; key mutations and managed ingestion lock the application before authorization or any key-row lock so concurrent membership changes and revocation cannot race authorization or deadlock. Ingestion derives the service owner and slug from the key's database-bound service rather than the creator or request header. Revoked unbound legacy rows remain durable but cannot authenticate or appear in application-scoped lists. Never persist or log the raw token.
 
 ### `monitored_service`
 

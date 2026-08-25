@@ -79,9 +79,18 @@ def auth(token: str) -> dict[str, str]:
 @pytest.mark.integration
 async def test_key_plaintext_is_returned_once_and_digest_only_is_persisted() -> None:
     async with key_client() as (client, factory):
+        service = await client.post(
+            "/api/v1/services",
+            json={
+                "slug": f"primary-{uuid4().hex}",
+                "display_name": "Primary",
+                "environment": "test",
+            },
+            headers=auth("token-a"),
+        )
         created = await client.post(
             "/api/v1/api-keys",
-            json={"name": "primary"},
+            json={"name": "primary", "service_id": service.json()["id"]},
             headers=auth("token-a"),
         )
         listed = await client.get("/api/v1/api-keys", headers=auth("token-a"))
@@ -106,9 +115,18 @@ async def test_key_plaintext_is_returned_once_and_digest_only_is_persisted() -> 
 @pytest.mark.integration
 async def test_keys_are_siloed_and_cross_tenant_ids_return_not_found() -> None:
     async with key_client() as (client, _):
+        service = await client.post(
+            "/api/v1/services",
+            json={
+                "slug": f"tenant-a-{uuid4().hex}",
+                "display_name": "Tenant A",
+                "environment": "test",
+            },
+            headers=auth("token-a"),
+        )
         created = await client.post(
             "/api/v1/api-keys",
-            json={"name": "tenant-a-key"},
+            json={"name": "tenant-a-key", "service_id": service.json()["id"]},
             headers=auth("token-a"),
         )
         key_id = created.json()["id"]
@@ -117,7 +135,8 @@ async def test_keys_are_siloed_and_cross_tenant_ids_return_not_found() -> None:
 
     assert list_b.status_code == status.HTTP_200_OK
     assert list_b.json() == []
-    assert hidden.status_code == status.HTTP_404_NOT_FOUND
+    assert hidden.status_code == status.HTTP_403_FORBIDDEN
+    assert hidden.json() == {"detail": "Application access denied"}
 
 
 @pytest.mark.integration
@@ -151,10 +170,20 @@ async def test_key_can_be_bound_to_owned_service_and_revoked() -> None:
 @pytest.mark.integration
 async def test_key_expiry_must_be_in_the_future() -> None:
     async with key_client() as (client, _):
+        service = await client.post(
+            "/api/v1/services",
+            json={
+                "slug": f"expiry-{uuid4().hex}",
+                "display_name": "Expiry",
+                "environment": "test",
+            },
+            headers=auth("token-a"),
+        )
         response = await client.post(
             "/api/v1/api-keys",
             json={
                 "name": "expired",
+                "service_id": service.json()["id"],
                 "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
             },
             headers=auth("token-a"),
@@ -167,9 +196,22 @@ async def test_key_expiry_must_be_in_the_future() -> None:
 async def test_binding_is_immutable_and_expiry_cannot_be_extended_or_removed() -> None:
     initial_expiry = datetime.now(UTC) + timedelta(days=1)
     async with key_client() as (client, _):
+        original_service = await client.post(
+            "/api/v1/services",
+            json={
+                "slug": f"original-binding-{uuid4().hex}",
+                "display_name": "Original binding",
+                "environment": "test",
+            },
+            headers=auth("token-a"),
+        )
         created = await client.post(
             "/api/v1/api-keys",
-            json={"name": "restricted", "expires_at": initial_expiry.isoformat()},
+            json={
+                "name": "restricted",
+                "service_id": original_service.json()["id"],
+                "expires_at": initial_expiry.isoformat(),
+            },
             headers=auth("token-a"),
         )
         key_id = created.json()["id"]

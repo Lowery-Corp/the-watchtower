@@ -1,4 +1,4 @@
-"""Digest-only profile-owned machine API keys."""
+"""Digest-only application machine keys with durable creator metadata."""
 
 from datetime import datetime
 from typing import Any
@@ -8,7 +8,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     LargeBinary,
     SmallInteger,
@@ -27,7 +26,7 @@ class ApiKey(Base):
 
     __tablename__ = "api_key"
     __table_args__ = (
-        UniqueConstraint("profile_id", "name", name="uq_api_key_profile_name"),
+        UniqueConstraint("service_id", "name", name="uq_api_key_service_name"),
         UniqueConstraint("secret_digest", name="uq_api_key_secret_digest"),
         CheckConstraint(
             "octet_length(secret_digest) = 32",
@@ -38,16 +37,12 @@ class ApiKey(Base):
             "expires_at IS NULL OR expires_at > created_at",
             name="ck_api_key_expires_after_creation",
         ),
-        ForeignKeyConstraint(
-            ["service_id", "profile_id"],
-            [
-                "watchtower.monitored_service.id",
-                "watchtower.monitored_service.profile_id",
-            ],
-            name="fk_api_key_service_profile",
-            ondelete="RESTRICT",
+        CheckConstraint(
+            "service_id IS NOT NULL OR revoked_at IS NOT NULL",
+            name="ck_api_key_service_or_revoked",
         ),
-        Index("ix_api_key_profile_revoked", "profile_id", "revoked_at"),
+        Index("ix_api_key_service_revoked", "service_id", "revoked_at"),
+        Index("ix_api_key_profile", "profile_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -59,7 +54,9 @@ class ApiKey(Base):
     public_prefix: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     secret_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    service_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    service_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("watchtower.monitored_service.id", ondelete="RESTRICT"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

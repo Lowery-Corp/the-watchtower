@@ -7,12 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class ApiKeyCreate(BaseModel):
-    """Request one events-write key, optionally bound to a service."""
+    """Request one events-write key bound to a machine source service."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=100)
-    service_id: UUID | None = None
+    service_id: UUID
     expires_at: datetime | None = None
 
     @field_validator("expires_at")

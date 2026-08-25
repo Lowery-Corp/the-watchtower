@@ -1,4 +1,4 @@
-"""Authenticated profile-owned API-key management."""
+"""Authenticated application-scoped API-key management."""
 
 from typing import Annotated
 from uuid import UUID
@@ -14,6 +14,8 @@ from watchtower.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyRead, 
 from watchtower.services.api_keys import (
     ApiKeyConflictError,
     ApiKeyNotFoundError,
+    ApplicationAccessDeniedError,
+    ApplicationNotFoundError,
     get_profile_api_key,
     issue_api_key,
     list_profile_api_keys,
@@ -24,12 +26,18 @@ from watchtower.services.api_keys import (
 router = APIRouter(
     prefix="/api-keys",
     tags=["api-keys"],
-    responses={403: {"description": "Profile access denied"}},
+    responses={403: {"description": "Application access denied"}},
 )
 
 
 def _not_found(exc: ApiKeyNotFoundError) -> HTTPException:
+    del exc
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+
+
+def _access_denied(exc: ApplicationAccessDeniedError) -> HTTPException:
+    del exc
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Application access denied")
 
 
 @router.post(
@@ -45,14 +53,18 @@ async def create_owned_api_key(
     current: Annotated[CurrentProfile, Depends(get_current_profile)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> ApiKeyCreated:
-    """Create and display a profile-owned machine key exactly once."""
+    """Create and display an application machine key exactly once."""
 
     try:
         api_key, token = await issue_api_key(
             session, profile_id=current.profile.id, payload=payload
         )
-    except ApiKeyNotFoundError as exc:
-        raise _not_found(exc) from exc
+    except ApplicationNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+        ) from exc
+    except ApplicationAccessDeniedError as exc:
+        raise _access_denied(exc) from exc
     except ApiKeyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -60,10 +72,7 @@ async def create_owned_api_key(
         ) from exc
     metadata = ApiKeyRead.model_validate(api_key)
     response.headers["Cache-Control"] = "no-store"
-    return ApiKeyCreated(
-        **metadata.model_dump(),
-        api_key=token.get_secret_value(),
-    )
+    return ApiKeyCreated(**metadata.model_dump(), api_key=token.get_secret_value())
 
 
 @router.get("", response_model=list[ApiKeyRead])
@@ -71,7 +80,7 @@ async def list_owned_api_keys(
     current: Annotated[CurrentProfile, Depends(get_current_profile)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> list[ApiKeyRead]:
-    """List safe metadata for the current profile's keys."""
+    """List safe metadata from applications the actor may read."""
 
     keys = await list_profile_api_keys(session, profile_id=current.profile.id)
     return [ApiKeyRead.model_validate(api_key) for api_key in keys]
@@ -91,6 +100,8 @@ async def get_owned_api_key(
         )
     except ApiKeyNotFoundError as exc:
         raise _not_found(exc) from exc
+    except ApplicationAccessDeniedError as exc:
+        raise _access_denied(exc) from exc
     return ApiKeyRead.model_validate(api_key)
 
 
@@ -116,6 +127,8 @@ async def update_owned_api_key(
         )
     except ApiKeyNotFoundError as exc:
         raise _not_found(exc) from exc
+    except ApplicationAccessDeniedError as exc:
+        raise _access_denied(exc) from exc
     except ApiKeyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -134,10 +147,12 @@ async def delete_owned_api_key(
     current: Annotated[CurrentProfile, Depends(get_current_profile)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> Response:
-    """Soft-revoke one key owned by the current profile."""
+    """Soft-revoke one key after an application permission check."""
 
     try:
         await revoke_api_key(session, profile_id=current.profile.id, api_key_id=api_key_id)
     except ApiKeyNotFoundError as exc:
         raise _not_found(exc) from exc
+    except ApplicationAccessDeniedError as exc:
+        raise _access_denied(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

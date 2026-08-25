@@ -25,7 +25,7 @@ from watchtower.core.security import (
 )
 from watchtower.db.dependencies import get_db_session
 from watchtower.repositories.api_keys import get_api_key_by_prefix
-from watchtower.repositories.monitored_services import get_monitored_service_by_slug
+from watchtower.repositories.monitored_services import get_application_by_id
 from watchtower.services.webhook_rate_limits import consume_webhook_rate_limit
 
 _GENERIC_AUTH_ERROR = "Invalid webhook authentication"
@@ -106,8 +106,8 @@ async def _authenticate_managed_key(
     session: AsyncSession,
     source: str,
     token: str,
-) -> tuple[UUID, UUID]:
-    """Resolve and validate one managed key before request-body consumption."""
+) -> tuple[UUID, UUID, str]:
+    """Resolve identity from a managed key's database service binding."""
 
     try:
         validate_service_identity(source)
@@ -126,22 +126,15 @@ async def _authenticate_managed_key(
             or api_key.revoked_at is not None
             or (api_key.expires_at is not None and api_key.expires_at <= now)
             or "events:write" not in api_key.scopes
+            or api_key.service_id is None
         ):
             raise _unauthorized()
 
-        service = await get_monitored_service_by_slug(
-            session,
-            profile_id=api_key.profile_id,
-            slug=source,
-        )
-        if (
-            service is None
-            or not service.active
-            or (api_key.service_id is not None and api_key.service_id != service.id)
-        ):
+        service = await get_application_by_id(session, application_id=api_key.service_id)
+        if service is None or not service.active or source != service.slug:
             raise _unauthorized()
 
-        return api_key.profile_id, api_key.id
+        return service.profile_id, api_key.id, service.slug
 
 
 async def authenticate_webhook(
@@ -159,7 +152,7 @@ async def authenticate_webhook(
     managed_token = managed_values[0] if managed_values else None
 
     if managed_token is not None:
-        profile_id, api_key_id = await _authenticate_managed_key(
+        profile_id, api_key_id, database_source = await _authenticate_managed_key(
             session=session,
             source=source,
             token=managed_token,
@@ -168,7 +161,7 @@ async def authenticate_webhook(
         body = await read_limited_body(request, settings.max_webhook_body_bytes)
         return AuthenticatedWebhook(
             profile_id=profile_id,
-            source=source,
+            source=database_source,
             body=body,
             api_key_id=api_key_id,
             api_key_token=SecretStr(managed_token),

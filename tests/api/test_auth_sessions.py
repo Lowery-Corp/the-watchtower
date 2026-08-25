@@ -363,13 +363,24 @@ async def test_cookie_authenticated_mutation_requires_trusted_origin() -> None:
     fake = FakeAuthClient()
     async with auth_client(fake) as (client, _):
         client.cookies.set("watchtower_session", "session-token")
+        service = await client.post(
+            "/api/v1/services",
+            json={
+                "slug": f"csrf-{uuid4().hex}",
+                "display_name": "CSRF service",
+                "environment": "test",
+            },
+            headers={"Origin": "https://watchtower.test"},
+        )
+        assert service.status_code == status.HTTP_201_CREATED
+        key_payload = {"name": "csrf-key", "service_id": service.json()["id"]}
         rejected = await client.post(
             "/api/v1/api-keys",
-            json={"name": "csrf-rejected"},
+            json=key_payload,
         )
         accepted = await client.post(
             "/api/v1/api-keys",
-            json={"name": "csrf-accepted"},
+            json=key_payload,
             headers={"Origin": "https://watchtower.test"},
         )
 
