@@ -62,6 +62,27 @@ services:
       retries: 12
       start_period: 5s
 
+  uptime-worker:
+    build:
+      context: .
+      target: runtime
+    command: ["python", "-m", "watchtower.workers.uptime"]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    environment:
+      WATCHTOWER_DATABASE_URL: postgresql+asyncpg://${WATCHTOWER_POSTGRES_USER:-watchtower}:${WATCHTOWER_POSTGRES_PASSWORD:-watchtower}@db:5432/${WATCHTOWER_POSTGRES_DB:-watchtower}
+      WATCHTOWER_ENVIRONMENT: ${WATCHTOWER_ENVIRONMENT:-local}
+      WATCHTOWER_UPTIME_CHECK_INTERVAL_SECONDS: ${WATCHTOWER_UPTIME_CHECK_INTERVAL_SECONDS:-60}
+      WATCHTOWER_UPTIME_CHECK_TIMEOUT_SECONDS: ${WATCHTOWER_UPTIME_CHECK_TIMEOUT_SECONDS:-10}
+      WATCHTOWER_UPTIME_WORKER_BATCH_SIZE: ${WATCHTOWER_UPTIME_WORKER_BATCH_SIZE:-50}
+      WATCHTOWER_UPTIME_WORKER_CONCURRENCY: ${WATCHTOWER_UPTIME_WORKER_CONCURRENCY:-10}
+      WATCHTOWER_UPTIME_HISTORY_RETENTION_DAYS: ${WATCHTOWER_UPTIME_HISTORY_RETENTION_DAYS:-30}
+      WATCHTOWER_UPTIME_WORKER_POLL_SECONDS: ${WATCHTOWER_UPTIME_WORKER_POLL_SECONDS:-5}
+      WATCHTOWER_UPTIME_MAX_ACTIVE_MONITORS_PER_PROFILE: ${WATCHTOWER_UPTIME_MAX_ACTIVE_MONITORS_PER_PROFILE:-100}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   frontend:
     build:
       context: ./watchtowersHouse

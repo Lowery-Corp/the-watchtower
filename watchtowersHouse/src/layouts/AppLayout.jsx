@@ -21,6 +21,7 @@ export default function AppLayout() {
           <nav aria-label="Primary navigation" className="order-3 flex w-full items-center justify-center gap-1 border-t border-white/5 pt-2 sm:order-none sm:w-auto sm:border-0 sm:pt-0">
             <NavLink to="/home" className={navClass}>Home</NavLink>
             <NavLink to="/services" className={navClass}>Services</NavLink>
+            <NavLink to="/uptime" className={navClass}>Uptime</NavLink>
             <NavLink to="/api-keys" className={navClass}>API Keys</NavLink>
             <NavLink to="/about" className={navClass}>About</NavLink>
           </nav>

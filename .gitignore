@@ -240,3 +240,4 @@ kafka-data/
 # Node.js dependencies and local Hermes work
 watchtowersHouse/node_modules/
 .hermes/plans/
+backups/

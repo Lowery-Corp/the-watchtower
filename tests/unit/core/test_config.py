@@ -43,3 +43,23 @@ def test_webhook_security_settings_are_typed(monkeypatch: MonkeyPatch) -> None:
     assert settings.max_webhook_body_bytes == 1024
     assert settings.webhook_rate_limit_requests == 25
     assert settings.webhook_rate_limit_window_seconds == 30
+
+
+
+def test_uptime_worker_defaults_are_bounded_and_server_owned(monkeypatch: MonkeyPatch) -> None:
+    for name in (
+        "WATCHTOWER_UPTIME_CHECK_INTERVAL_SECONDS",
+        "WATCHTOWER_UPTIME_CHECK_TIMEOUT_SECONDS",
+        "WATCHTOWER_UPTIME_WORKER_BATCH_SIZE",
+        "WATCHTOWER_UPTIME_WORKER_CONCURRENCY",
+        "WATCHTOWER_UPTIME_HISTORY_RETENTION_DAYS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.uptime_check_interval_seconds == 60
+    assert settings.uptime_check_timeout_seconds == 10.0
+    assert settings.uptime_worker_batch_size == 50
+    assert settings.uptime_worker_concurrency == 10
+    assert settings.uptime_history_retention_days == 30

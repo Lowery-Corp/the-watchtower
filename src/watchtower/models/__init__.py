@@ -10,6 +10,8 @@ from watchtower.models.profile_role import ProfileRole
 from watchtower.models.role import Role
 from watchtower.models.role_permission import RolePermission
 from watchtower.models.webhook_rate_limit import WebhookRateLimit
+from watchtower.models.website_monitor import WebsiteMonitor
+from watchtower.models.website_monitor_check import WebsiteMonitorCheck
 
 __all__ = [
     "ApiKey",
@@ -22,4 +24,6 @@ __all__ = [
     "Role",
     "RolePermission",
     "WebhookRateLimit",
+    "WebsiteMonitor",
+    "WebsiteMonitorCheck",
 ]

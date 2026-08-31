@@ -34,3 +34,18 @@ def test_compose_publishes_frontend_and_api_without_nginx() -> None:
     assert '"Permissions-Policy"' in frontend_server
     assert "https://dwatchtower.johnmgrubbs.io" in compose
     assert not Path("deploy/nginx/default.conf").exists()
+
+
+
+def test_compose_runs_private_uptime_worker_after_migrations() -> None:
+    compose = Path("compose.yaml").read_text(encoding="utf-8")
+    assert "  uptime-worker:" in compose
+    section = compose.split("  uptime-worker:", 1)[1].split("\n  frontend:", 1)[0]
+    assert 'command: ["python", "-m", "watchtower.workers.uptime"]' in section
+    assert "restart: unless-stopped" in section
+    assert "stop_grace_period: 20s" in section
+    assert "migrate:" in section
+    assert "condition: service_completed_successfully" in section
+    assert "ports:" not in section
+    assert "WATCHTOWER_UPTIME_CHECK_INTERVAL_SECONDS" in section
+    assert "WATCHTOWER_UPTIME_CHECK_TIMEOUT_SECONDS" in section

@@ -68,4 +68,25 @@ describe("AppLayout", () => {
     expect(screen.getByText("Home content")).toBeVisible();
     expect(screen.queryByText("Login page")).not.toBeInTheDocument();
   });
+
+  it("navigates to uptime monitoring from the primary navigation", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/home"]}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/home" element={<p>Home content</p>} />
+            <Route path="/uptime" element={<h1>Website Uptime</h1>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const uptimeLink = screen.getByRole("link", { name: "Uptime" });
+    await user.click(uptimeLink);
+
+    expect(uptimeLink).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "Website Uptime" })).toBeVisible();
+  });
+
 });
