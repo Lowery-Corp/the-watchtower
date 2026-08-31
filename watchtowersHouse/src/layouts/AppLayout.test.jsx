@@ -22,6 +22,27 @@ describe("AppLayout", () => {
     logout.mockResolvedValue({ ok: true });
   });
 
+  it("navigates to the About page from the primary navigation", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <MemoryRouter initialEntries={["/home"]}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/home" element={<p>Home content</p>} />
+            <Route path="/about" element={<h1>About Watchtower</h1>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const aboutLink = screen.getByRole("link", { name: "About" });
+    await user.click(aboutLink);
+
+    expect(aboutLink).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "About Watchtower" })).toBeVisible();
+  });
+
   it("keeps the visible logout control intentionally inert", async () => {
     const user = userEvent.setup();
 

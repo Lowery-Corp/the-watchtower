@@ -3,6 +3,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import AppLayout from "./layouts/AppLayout";
 import Home from "./pages/Home";
 import ApiKeys from "./pages/ApiKeys";
+import About from "./pages/About";
 import Login from "./pages/Login";
 import MonitoredServices from "./pages/MonitoredServices";
 
@@ -24,6 +25,7 @@ export default function App() {
           <Route path="home" element={<Home />} />
           <Route path="services" element={<MonitoredServices />} />
           <Route path="api-keys" element={<ApiKeys />} />
+          <Route path="about" element={<About />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFound />} />

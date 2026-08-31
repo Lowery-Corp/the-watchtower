@@ -15,8 +15,8 @@ RUN pip install --no-cache-dir .
 
 FROM base AS test
 RUN pip install --no-cache-dir ".[dev]"
-COPY compose.yaml ./
-COPY deploy/ ./deploy/
+COPY Dockerfile compose.yaml ./
+COPY watchtowersHouse/Dockerfile watchtowersHouse/server.mjs watchtowersHouse/vite.config.js ./watchtowersHouse/
 COPY tests/ ./tests/
 CMD ["pytest", "-v"]
 

@@ -22,6 +22,7 @@ export default function AppLayout() {
             <NavLink to="/home" className={navClass}>Home</NavLink>
             <NavLink to="/services" className={navClass}>Services</NavLink>
             <NavLink to="/api-keys" className={navClass}>API Keys</NavLink>
+            <NavLink to="/about" className={navClass}>About</NavLink>
           </nav>
           <div className="flex items-center gap-3">
             <div className="hidden text-right sm:block">
