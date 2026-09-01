@@ -20,7 +20,9 @@ from aiohttp import (
 )
 from aiohttp.abc import AbstractResolver, ResolveResult
 
-FailureKind = Literal["dns", "blocked_target", "timeout", "tls", "connect", "http"]
+FailureKind = Literal[
+    "dns", "blocked_target", "timeout", "tls", "connect", "http", "internal_error"
+]
 
 
 class UnsafeTargetError(ValueError):

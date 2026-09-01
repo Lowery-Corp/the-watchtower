@@ -83,9 +83,7 @@ async def get_website_monitor_uptime_24h(
 
     window_start = datetime.now(UTC) - timedelta(hours=24)
     total = func.count(WebsiteMonitorCheck.id)
-    up = func.count(WebsiteMonitorCheck.id).filter(
-        WebsiteMonitorCheck.is_up.is_(True)
-    )
+    up = func.count(WebsiteMonitorCheck.id).filter(WebsiteMonitorCheck.is_up.is_(True))
     value = await session.scalar(
         select(case((total == 0, None), else_=(up * 100.0) / total)).where(
             WebsiteMonitorCheck.monitor_id == monitor_id,
@@ -108,11 +106,11 @@ async def get_authorized_website_monitor(
         WebsiteMonitor | None,
         await session.scalar(
             select(WebsiteMonitor).where(
-            WebsiteMonitor.id == monitor_id,
-            application_permission_exists(
-                profile_id=profile_id,
-                application_id=WebsiteMonitor.service_id,
-                permission_name=permission_name,
+                WebsiteMonitor.id == monitor_id,
+                application_permission_exists(
+                    profile_id=profile_id,
+                    application_id=WebsiteMonitor.service_id,
+                    permission_name=permission_name,
                 ),
             )
         ),
@@ -191,16 +189,20 @@ async def claim_due_website_monitors(
     now: datetime,
     interval_seconds: int,
     limit: int,
+    monitor_ids: set[UUID] | None = None,
 ) -> list[ClaimedWebsiteMonitor]:
     """Claim due rows with skip-locked semantics and advance their schedule."""
 
+    conditions = [
+        WebsiteMonitor.active.is_(True),
+        WebsiteMonitor.next_check_at <= now,
+    ]
+    if monitor_ids is not None:
+        conditions.append(WebsiteMonitor.id.in_(monitor_ids))
     monitors = list(
         await session.scalars(
             select(WebsiteMonitor)
-            .where(
-                WebsiteMonitor.active.is_(True),
-                WebsiteMonitor.next_check_at <= now,
-            )
+            .where(*conditions)
             .order_by(WebsiteMonitor.next_check_at, WebsiteMonitor.id)
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -214,16 +216,11 @@ async def claim_due_website_monitors(
     return [ClaimedWebsiteMonitor(id=monitor.id, url=monitor.url) for monitor in monitors]
 
 
-async def website_monitor_is_active(
-    session: AsyncSession, *, monitor_id: UUID
-) -> bool:
-    """Return whether a claimed monitor is still active before probing."""
+async def lock_active_website_monitor(session: AsyncSession, *, monitor_id: UUID) -> bool:
+    """Lock a monitor through probing so stop and probe have one ordering."""
 
-    return bool(
-        await session.scalar(
-            select(WebsiteMonitor.active).where(WebsiteMonitor.id == monitor_id)
-        )
-    )
+    monitor = await session.get(WebsiteMonitor, monitor_id, with_for_update=True)
+    return bool(monitor is not None and monitor.active)
 
 
 async def record_website_monitor_check(
@@ -232,6 +229,7 @@ async def record_website_monitor_check(
     monitor_id: UUID,
     checked_at: datetime,
     result: ProbeResult,
+    next_check_at: datetime | None = None,
 ) -> bool:
     """Append a result only while the monitor remains active."""
 
@@ -256,6 +254,8 @@ async def record_website_monitor_check(
     monitor.last_response_time_ms = result.response_time_ms
     monitor.last_failure_kind = result.failure_kind
     monitor.updated_at = checked_at
+    if next_check_at is not None:
+        monitor.next_check_at = next_check_at
     await session.flush()
     return True
 

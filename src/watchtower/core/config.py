@@ -18,9 +18,7 @@ class Settings(BaseSettings):
     )
 
     environment: Literal["local", "test", "staging", "production"] = "local"
-    database_url: str = (
-        "postgresql+asyncpg://watchtower:watchtower@db:5432/watchtower"
-    )
+    database_url: str = "postgresql+asyncpg://watchtower:watchtower@db:5432/watchtower"
     auth_service_url: str = "https://dauth.johnmgrubbs.io"
     auth_service_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     session_cookie_name: str = Field(default="watchtower_session", min_length=1, max_length=64)
@@ -41,6 +39,8 @@ class Settings(BaseSettings):
     uptime_history_retention_days: int = Field(default=30, ge=1, le=365)
     uptime_worker_poll_seconds: float = Field(default=5.0, ge=0.25, le=60)
     uptime_max_active_monitors_per_profile: int = Field(default=100, ge=1, le=1000)
+    uptime_monitor_create_rate_limit_requests: int = Field(default=20, ge=1, le=1000)
+    uptime_monitor_create_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
 
 @lru_cache

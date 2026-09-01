@@ -110,6 +110,51 @@ describe("Uptime monitors", () => {
     }
   });
 
+  it("finishes a slow full load without overwriting a newer refresh", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let resolveServices;
+    const slowServices = new Promise((resolve) => { resolveServices = resolve; });
+    listMonitoredServices.mockReturnValueOnce(slowServices);
+    listUptimeMonitors.mockResolvedValueOnce([]).mockResolvedValueOnce([monitor]);
+    try {
+      render(<UptimeMonitors />);
+      expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await act(async () => { resolveServices([service]); });
+
+      expect(await screen.findByRole("link", { name: monitor.url })).toBeVisible();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a stale refresh overwrite a successful creation", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let resolveRefresh;
+    const refresh = new Promise((resolve) => { resolveRefresh = resolve; });
+    listUptimeMonitors.mockResolvedValueOnce([]).mockReturnValueOnce(refresh);
+    createUptimeMonitor.mockResolvedValue(monitor);
+    const user = userEvent.setup();
+    try {
+      render(<UptimeMonitors />);
+      await screen.findByText(/no website monitors yet/i);
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+      await user.click(screen.getByRole("button", { name: /add website monitor/i }));
+      const dialog = screen.getByRole("dialog", { name: /add website monitor/i });
+      await user.type(within(dialog).getByLabelText("Website URL"), "https://example.com");
+      await user.selectOptions(within(dialog).getByLabelText("Existing service"), service.id);
+      await user.click(within(dialog).getByRole("button", { name: /^create monitor$/i }));
+      expect(await screen.findByRole("link", { name: monitor.url })).toBeVisible();
+
+      await act(async () => { resolveRefresh([]); });
+      expect(screen.getByRole("link", { name: monitor.url })).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows a retryable error instead of an empty state", async () => {
     listUptimeMonitors.mockRejectedValue({ response: { data: { detail: "Uptime unavailable" } } });
     render(<UptimeMonitors />);

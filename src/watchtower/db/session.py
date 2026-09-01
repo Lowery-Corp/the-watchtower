@@ -8,10 +8,20 @@ from sqlalchemy.ext.asyncio import (
 )
 
 
-def create_async_database_engine(database_url: str) -> AsyncEngine:
+def create_async_database_engine(
+    database_url: str,
+    *,
+    pool_size: int | None = None,
+    max_overflow: int | None = None,
+) -> AsyncEngine:
     """Create a lazy async engine; no connection is made here."""
 
-    return create_async_engine(database_url, pool_pre_ping=True)
+    pool_options: dict[str, int] = {}
+    if pool_size is not None:
+        pool_options["pool_size"] = pool_size
+    if max_overflow is not None:
+        pool_options["max_overflow"] = max_overflow
+    return create_async_engine(database_url, pool_pre_ping=True, **pool_options)
 
 
 def create_session_factory(

@@ -12,6 +12,7 @@ from watchtower.api.v1.dependencies.user_auth import CurrentProfile, get_current
 from watchtower.db.dependencies import get_db_session
 from watchtower.repositories.website_monitors import WebsiteMonitorView
 from watchtower.schemas.website_monitor import WebsiteMonitorCreate, WebsiteMonitorRead
+from watchtower.services.webhook_rate_limits import consume_webhook_rate_limit
 from watchtower.services.website_monitors import (
     WebsiteMonitorAccessDeniedError,
     WebsiteMonitorConflictError,
@@ -57,6 +58,7 @@ def _read(view: WebsiteMonitorView) -> WebsiteMonitorRead:
         401: {"description": "Authentication required"},
         404: {"description": "Service not found"},
         409: {"description": "URL already monitored for service"},
+        429: {"description": "Monitor quota or creation rate limit reached"},
     },
 )
 async def create_monitor(
@@ -67,6 +69,18 @@ async def create_monitor(
 ) -> WebsiteMonitorRead:
     """Create a monitor from exactly one URL and existing service."""
 
+    retry_after = await consume_webhook_rate_limit(
+        session,
+        identity=f"uptime-monitor-create:{current.profile.id}",
+        max_requests=(request.app.state.settings.uptime_monitor_create_rate_limit_requests),
+        window_seconds=(request.app.state.settings.uptime_monitor_create_rate_limit_window_seconds),
+    )
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Website monitor creation rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
     try:
         return _read(
             await create_website_monitor(
@@ -107,10 +121,7 @@ async def list_monitors(
     """List monitors on applications the profile may read."""
 
     return [
-        _read(view)
-        for view in await list_website_monitors(
-            session, profile_id=current.profile.id
-        )
+        _read(view) for view in await list_website_monitors(session, profile_id=current.profile.id)
     ]
 
 

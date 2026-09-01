@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Dialog from "../components/Dialog";
 import { getErrorMessage } from "../services/api";
 import { listMonitoredServices } from "../services/monitoredServices";
@@ -108,7 +108,7 @@ function StopMonitorDialog({ monitor, onClose, onStopped }) {
       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-red-300">Stop checks</p>
       <h2 id="stop-uptime-monitor-title" className="mt-2 font-display text-2xl font-semibold text-white">Stop monitoring this website?</h2>
       <p className="mt-3 break-all text-sm text-slate-300">{monitor.url}</p>
-      <p className="mt-3 text-sm leading-6 text-slate-400">No new checks will run. Existing uptime history remains available for retention and audit purposes.</p>
+      <p className="mt-3 text-sm leading-6 text-slate-400">A check that already started may finish before stopping completes. No checks start after stopping completes, and existing history remains available for retention and audit purposes.</p>
       {error && <div role="alert" className="error-banner mt-5">{error}</div>}
       <div className="mt-6 flex justify-end gap-3">
         <button type="button" disabled={submitting} onClick={onClose} className="secondary-button">Cancel</button>
@@ -126,8 +126,12 @@ export default function UptimeMonitors() {
   const [refreshError, setRefreshError] = useState("");
   const [creating, setCreating] = useState(false);
   const [pendingStop, setPendingStop] = useState(null);
+  const fullLoadVersion = useRef(0);
+  const monitorVersion = useRef(0);
 
   const loadData = useCallback(async () => {
+    const fullVersion = ++fullLoadVersion.current;
+    const monitorsVersion = ++monitorVersion.current;
     setLoading(true);
     setError("");
     setRefreshError("");
@@ -136,12 +140,14 @@ export default function UptimeMonitors() {
         listMonitoredServices(),
         listUptimeMonitors(),
       ]);
+      if (fullVersion !== fullLoadVersion.current) return;
       setServices(loadedServices);
-      setMonitors(loadedMonitors);
+      if (monitorsVersion === monitorVersion.current) setMonitors(loadedMonitors);
     } catch (requestError) {
+      if (fullVersion !== fullLoadVersion.current) return;
       setError(getErrorMessage(requestError, "Website uptime could not be loaded."));
     } finally {
-      setLoading(false);
+      if (fullVersion === fullLoadVersion.current) setLoading(false);
     }
   }, []);
 
@@ -150,14 +156,15 @@ export default function UptimeMonitors() {
     let cancelled = false;
     let timeout;
     const refresh = async () => {
+      const version = ++monitorVersion.current;
       try {
         const refreshed = await listUptimeMonitors();
-        if (!cancelled) {
+        if (!cancelled && version === monitorVersion.current) {
           setMonitors(refreshed);
           setRefreshError("");
         }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && version === monitorVersion.current) {
           setRefreshError("Uptime data may be out of date. Refresh to try again.");
         }
       } finally {
@@ -178,10 +185,12 @@ export default function UptimeMonitors() {
   }), [monitors]);
 
   const handleCreated = (created) => {
+    monitorVersion.current += 1;
     setMonitors((current) => [created, ...current]);
     setCreating(false);
   };
   const handleStopped = (monitorId) => {
+    monitorVersion.current += 1;
     setMonitors((current) => current.filter((monitor) => monitor.id !== monitorId));
     setPendingStop(null);
   };

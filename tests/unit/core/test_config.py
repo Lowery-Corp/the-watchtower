@@ -36,14 +36,11 @@ def test_webhook_security_settings_are_typed(monkeypatch: MonkeyPatch) -> None:
 
     settings = Settings()
 
-    assert settings.webhook_secrets["scrappy"].get_secret_value() == (
-        "development-signing-secret"
-    )
+    assert settings.webhook_secrets["scrappy"].get_secret_value() == ("development-signing-secret")
     assert settings.webhook_signature_tolerance_seconds == 120
     assert settings.max_webhook_body_bytes == 1024
     assert settings.webhook_rate_limit_requests == 25
     assert settings.webhook_rate_limit_window_seconds == 30
-
 
 
 def test_uptime_worker_defaults_are_bounded_and_server_owned(monkeypatch: MonkeyPatch) -> None:
@@ -63,3 +60,6 @@ def test_uptime_worker_defaults_are_bounded_and_server_owned(monkeypatch: Monkey
     assert settings.uptime_worker_batch_size == 50
     assert settings.uptime_worker_concurrency == 10
     assert settings.uptime_history_retention_days == 30
+    assert settings.uptime_max_active_monitors_per_profile == 100
+    assert settings.uptime_monitor_create_rate_limit_requests == 20
+    assert settings.uptime_monitor_create_rate_limit_window_seconds == 60

@@ -7,7 +7,8 @@ from typing import cast
 from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import String, delete, literal, select
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette import status
 
@@ -17,6 +18,7 @@ from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.profile import Profile
 from watchtower.models.profile_role import ProfileRole
 from watchtower.models.role import VIEWER_ROLE_ID
+from watchtower.models.webhook_rate_limit import WebhookRateLimit
 from watchtower.models.website_monitor import WebsiteMonitor
 from watchtower.models.website_monitor_check import WebsiteMonitorCheck
 from watchtower.schemas.auth import AuthenticatedUser
@@ -35,7 +37,9 @@ class UptimeAuthClient:
 
 @asynccontextmanager
 async def uptime_client(
-    *, max_active_monitors_per_profile: int = 100
+    *,
+    max_active_monitors_per_profile: int = 100,
+    create_rate_limit_requests: int = 20,
 ) -> AsyncIterator[tuple[AsyncClient, async_sessionmaker[AsyncSession]]]:
     app = create_app(
         Settings(
@@ -43,6 +47,7 @@ async def uptime_client(
             database_url=DATABASE_URL,
             auth_service_url="http://auth.test",
             uptime_max_active_monitors_per_profile=max_active_monitors_per_profile,
+            uptime_monitor_create_rate_limit_requests=create_rate_limit_requests,
         )
     )
     app.state.auth_client = UptimeAuthClient()
@@ -65,6 +70,14 @@ async def uptime_client(
                         )
                         await session.execute(
                             delete(WebsiteMonitor).where(WebsiteMonitor.service_id.in_(service_ids))
+                        )
+                        rate_limit_identities = select(
+                            literal("uptime-monitor-create:") + sql_cast(Profile.id, String)
+                        ).where(Profile.auth_user_id.in_([user.id for user in USERS.values()]))
+                        await session.execute(
+                            delete(WebhookRateLimit).where(
+                                WebhookRateLimit.identity.in_(rate_limit_identities)
+                            )
                         )
                         await session.execute(
                             delete(ProfileRole).where(
@@ -152,9 +165,7 @@ async def test_duplicate_is_conflict_and_delete_deactivates_monitor() -> None:
             f"/api/v1/uptime-monitors/{created.json()['id']}", headers=auth()
         )
         listed = await client.get("/api/v1/uptime-monitors", headers=auth())
-        recreated = await client.post(
-            "/api/v1/uptime-monitors", headers=auth(), json=payload
-        )
+        recreated = await client.post("/api/v1/uptime-monitors", headers=auth(), json=payload)
 
     assert created.status_code == status.HTTP_201_CREATED
     assert duplicate.status_code == status.HTTP_409_CONFLICT
@@ -218,9 +229,7 @@ async def test_application_permissions_bound_visibility_and_management() -> None
                 )
 
         viewer_list = await client.get("/api/v1/uptime-monitors", headers=auth("viewer"))
-        unrelated_list = await client.get(
-            "/api/v1/uptime-monitors", headers=auth("unrelated")
-        )
+        unrelated_list = await client.get("/api/v1/uptime-monitors", headers=auth("unrelated"))
         viewer_create = await client.post(
             "/api/v1/uptime-monitors",
             headers=auth("viewer"),
@@ -243,8 +252,35 @@ async def test_application_permissions_bound_visibility_and_management() -> None
 async def test_profile_active_monitor_quota_bounds_recurring_probes() -> None:
     async with uptime_client(max_active_monitors_per_profile=1) as (client, _):
         service = await create_service(client)
-        first = await client.post("/api/v1/uptime-monitors", headers=auth(), json={"url": "https://one.example/", "service_id": service["id"]})
-        limited = await client.post("/api/v1/uptime-monitors", headers=auth(), json={"url": "https://two.example/", "service_id": service["id"]})
+        first = await client.post(
+            "/api/v1/uptime-monitors",
+            headers=auth(),
+            json={"url": "https://one.example/", "service_id": service["id"]},
+        )
+        limited = await client.post(
+            "/api/v1/uptime-monitors",
+            headers=auth(),
+            json={"url": "https://two.example/", "service_id": service["id"]},
+        )
     assert first.status_code == status.HTTP_201_CREATED
     assert limited.status_code == status.HTTP_429_TOO_MANY_REQUESTS
     assert limited.json() == {"detail": "Active website monitor limit reached"}
+
+
+async def test_monitor_creation_is_rate_limited_per_profile() -> None:
+    async with uptime_client(create_rate_limit_requests=1) as (client, _):
+        service = await create_service(client)
+        first = await client.post(
+            "/api/v1/uptime-monitors",
+            headers=auth(),
+            json={"url": "https://rate-one.example/", "service_id": service["id"]},
+        )
+        limited = await client.post(
+            "/api/v1/uptime-monitors",
+            headers=auth(),
+            json={"url": "https://rate-two.example/", "service_id": service["id"]},
+        )
+    assert first.status_code == status.HTTP_201_CREATED
+    assert limited.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+    assert int(limited.headers["Retry-After"]) >= 1
+    assert limited.json() == {"detail": "Website monitor creation rate limit exceeded"}

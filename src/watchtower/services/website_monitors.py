@@ -65,22 +65,18 @@ async def create_website_monitor(
             )
             if not allowed:
                 raise WebsiteMonitorAccessDeniedError("Application access denied")
-            service = await get_application_by_id(
-                session, application_id=payload.service_id
-            )
+            service = await get_application_by_id(session, application_id=payload.service_id)
             if service is None:
                 raise WebsiteMonitorServiceNotFoundError("Service not found")
             monitor = await get_website_monitor_by_service_url(
                 session, service_id=service.id, url=payload.url
             )
             if monitor is not None and monitor.active:
-                raise WebsiteMonitorConflictError(
-                    "URL already monitored for service"
-                )
+                raise WebsiteMonitorConflictError("URL already monitored for service")
             try:
                 await enforce_active_monitor_quota(
                     session,
-                    profile_id=profile_id,
+                    profile_id=service.profile_id,
                     maximum=max_active_monitors_per_profile,
                 )
             except OverflowError as exc:
@@ -92,9 +88,7 @@ async def create_website_monitor(
                 monitor.updated_at = now
                 await session.flush()
             else:
-                monitor = await add_website_monitor(
-                    session, service_id=service.id, url=payload.url
-                )
+                monitor = await add_website_monitor(session, service_id=service.id, url=payload.url)
             return WebsiteMonitorView(
                 monitor=monitor,
                 service_slug=service.slug,
@@ -115,9 +109,7 @@ async def list_website_monitors(
     """List active monitors authorized by applications.read."""
 
     async with session.begin():
-        return await list_authorized_website_monitors(
-            session, profile_id=profile_id
-        )
+        return await list_authorized_website_monitors(session, profile_id=profile_id)
 
 
 async def deactivate_website_monitor(

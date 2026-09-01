@@ -72,6 +72,7 @@ async def test_due_monitor_is_claimed_once_and_result_is_recorded_atomically() -
                             now=datetime.now(UTC),
                             interval_seconds=60,
                             limit=10,
+                            monitor_ids={monitor_id},
                         )
                     )
 
@@ -101,9 +102,7 @@ async def test_due_monitor_is_claimed_once_and_result_is_recorded_atomically() -
             monitor = await session.get(WebsiteMonitor, monitor_id)
             checks = list(
                 await session.scalars(
-                    select(WebsiteMonitorCheck).where(
-                        WebsiteMonitorCheck.monitor_id == monitor_id
-                    )
+                    select(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id)
                 )
             )
         assert monitor is not None
@@ -117,9 +116,7 @@ async def test_due_monitor_is_claimed_once_and_result_is_recorded_atomically() -
     finally:
         async with factory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id)
-                )
+                await session.execute(delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id))
                 await session.execute(
                     delete(MonitoredService).where(MonitoredService.id == service_id)
                 )
@@ -183,6 +180,7 @@ async def test_worker_cycle_probes_due_monitor_and_persists_result() -> None:
                 auth_service_url="http://auth.test",
             ),
             probe=fake_probe,
+            monitor_ids={monitor_id},
         )
 
         assert processed == 1
@@ -191,9 +189,7 @@ async def test_worker_cycle_probes_due_monitor_and_persists_result() -> None:
             monitor = await session.get(WebsiteMonitor, monitor_id)
             checks = list(
                 await session.scalars(
-                    select(WebsiteMonitorCheck).where(
-                        WebsiteMonitorCheck.monitor_id == monitor_id
-                    )
+                    select(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id)
                 )
             )
             assert monitor is not None
@@ -204,13 +200,9 @@ async def test_worker_cycle_probes_due_monitor_and_persists_result() -> None:
         async with factory() as session:
             async with session.begin():
                 await session.execute(
-                    delete(WebsiteMonitorCheck).where(
-                        WebsiteMonitorCheck.monitor_id == monitor_id
-                    )
+                    delete(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id)
                 )
-                await session.execute(
-                    delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id)
-                )
+                await session.execute(delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id))
                 await session.execute(
                     delete(MonitoredService).where(MonitoredService.id == service_id)
                 )
@@ -233,13 +225,35 @@ async def test_worker_skips_claimed_monitor_deactivated_before_probe() -> None:
             async with session.begin():
                 session.add(Profile(id=profile_id, auth_user_id=uuid4(), display_name="stop race"))
                 await session.flush()
-                session.add(MonitoredService(id=service_id, profile_id=profile_id, slug=f"stop-race-{uuid4().hex}", display_name="Stop race", environment="test", active=True, secret_key_id="managed"))
+                session.add(
+                    MonitoredService(
+                        id=service_id,
+                        profile_id=profile_id,
+                        slug=f"stop-race-{uuid4().hex}",
+                        display_name="Stop race",
+                        environment="test",
+                        active=True,
+                        secret_key_id="managed",
+                    )
+                )
                 await session.flush()
                 due = datetime.now(UTC) - timedelta(minutes=1)
-                session.add_all([
-                    WebsiteMonitor(id=first_id, service_id=service_id, url="https://one.example/", next_check_at=due),
-                    WebsiteMonitor(id=second_id, service_id=service_id, url="https://two.example/", next_check_at=due),
-                ])
+                session.add_all(
+                    [
+                        WebsiteMonitor(
+                            id=first_id,
+                            service_id=service_id,
+                            url="https://one.example/",
+                            next_check_at=due,
+                        ),
+                        WebsiteMonitor(
+                            id=second_id,
+                            service_id=service_id,
+                            url="https://two.example/",
+                            next_check_at=due,
+                        ),
+                    ]
+                )
 
         async def fake_probe(url: str, **kwargs: object) -> ProbeResult:
             calls.append(url)
@@ -248,7 +262,19 @@ async def test_worker_skips_claimed_monitor_deactivated_before_probe() -> None:
                 await release_first.wait()
             return ProbeResult(is_up=True, status_code=200, response_time_ms=1, failure_kind=None)
 
-        cycle = asyncio.create_task(run_uptime_cycle(factory, Settings(environment="test", database_url=DATABASE_URL, auth_service_url="http://auth.test", uptime_worker_concurrency=1), probe=fake_probe))
+        cycle = asyncio.create_task(
+            run_uptime_cycle(
+                factory,
+                Settings(
+                    environment="test",
+                    database_url=DATABASE_URL,
+                    auth_service_url="http://auth.test",
+                    uptime_worker_concurrency=1,
+                ),
+                probe=fake_probe,
+                monitor_ids={first_id, second_id},
+            )
+        )
         await asyncio.wait_for(first_started.wait(), timeout=5)
         async with factory() as session:
             async with session.begin():
@@ -260,43 +286,189 @@ async def test_worker_skips_claimed_monitor_deactivated_before_probe() -> None:
 
         assert calls == ["https://one.example/"]
         async with factory() as session:
-            second_checks = await session.scalar(select(func.count()).select_from(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == second_id))
+            second_checks = await session.scalar(
+                select(func.count())
+                .select_from(WebsiteMonitorCheck)
+                .where(WebsiteMonitorCheck.monitor_id == second_id)
+            )
         assert second_checks == 0
     finally:
         async with factory() as session:
             async with session.begin():
-                await session.execute(delete(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id.in_([first_id, second_id])))
-                await session.execute(delete(WebsiteMonitor).where(WebsiteMonitor.id.in_([first_id, second_id])))
-                await session.execute(delete(MonitoredService).where(MonitoredService.id == service_id))
+                await session.execute(
+                    delete(WebsiteMonitorCheck).where(
+                        WebsiteMonitorCheck.monitor_id.in_([first_id, second_id])
+                    )
+                )
+                await session.execute(
+                    delete(WebsiteMonitor).where(WebsiteMonitor.id.in_([first_id, second_id]))
+                )
+                await session.execute(
+                    delete(MonitoredService).where(MonitoredService.id == service_id)
+                )
                 await session.execute(delete(Profile).where(Profile.id == profile_id))
         await engine.dispose()
 
 
 @pytest.mark.integration
-async def test_result_is_discarded_when_monitor_stops_during_probe() -> None:
+async def test_stop_waits_for_in_progress_probe_before_deactivating() -> None:
+    engine = create_async_database_engine(DATABASE_URL)
+    factory = create_session_factory(DATABASE_URL, engine=engine)
+    profile_id, service_id, monitor_id = uuid4(), uuid4(), uuid4()
+    probe_started = asyncio.Event()
+    release_probe = asyncio.Event()
+    try:
+        async with factory() as session:
+            async with session.begin():
+                session.add(
+                    Profile(id=profile_id, auth_user_id=uuid4(), display_name="stop race")
+                )
+                await session.flush()
+                session.add(
+                    MonitoredService(
+                        id=service_id,
+                        profile_id=profile_id,
+                        slug=f"stop-race-{uuid4().hex}",
+                        display_name="Stop race",
+                        environment="test",
+                        active=True,
+                        secret_key_id="managed",
+                    )
+                )
+                await session.flush()
+                session.add(
+                    WebsiteMonitor(
+                        id=monitor_id,
+                        service_id=service_id,
+                        url="https://example.com/",
+                        next_check_at=datetime.now(UTC) - timedelta(minutes=1),
+                    )
+                )
+
+        async def blocking_probe(url: str, **kwargs: object) -> ProbeResult:
+            probe_started.set()
+            await release_probe.wait()
+            return ProbeResult(
+                is_up=True, status_code=200, response_time_ms=1, failure_kind=None
+            )
+
+        cycle = asyncio.create_task(
+            run_uptime_cycle(
+                factory,
+                Settings(
+                    environment="test",
+                    database_url=DATABASE_URL,
+                    auth_service_url="http://auth.test",
+                    uptime_worker_concurrency=1,
+                ),
+                probe=blocking_probe,
+                monitor_ids={monitor_id},
+            )
+        )
+        await asyncio.wait_for(probe_started.wait(), timeout=5)
+
+        async def stop_monitor() -> None:
+            async with factory() as session:
+                async with session.begin():
+                    target = await session.get(WebsiteMonitor, monitor_id)
+                    assert target is not None
+                    target.active = False
+
+        stop_task = asyncio.create_task(stop_monitor())
+        await asyncio.sleep(0.05)
+        assert not stop_task.done()
+        release_probe.set()
+        await asyncio.gather(cycle, stop_task)
+
+        async with factory() as session:
+            count = await session.scalar(
+                select(func.count())
+                .select_from(WebsiteMonitorCheck)
+                .where(WebsiteMonitorCheck.monitor_id == monitor_id)
+            )
+            target = await session.get(WebsiteMonitor, monitor_id)
+        assert count == 1
+        assert target is not None and target.active is False
+    finally:
+        release_probe.set()
+        async with factory() as session:
+            async with session.begin():
+                await session.execute(
+                    delete(WebsiteMonitorCheck).where(
+                        WebsiteMonitorCheck.monitor_id == monitor_id
+                    )
+                )
+                await session.execute(
+                    delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id)
+                )
+                await session.execute(
+                    delete(MonitoredService).where(MonitoredService.id == service_id)
+                )
+                await session.execute(delete(Profile).where(Profile.id == profile_id))
+        await engine.dispose()
+
+
+@pytest.mark.integration
+async def test_unexpected_probe_failure_records_down_result() -> None:
     engine = create_async_database_engine(DATABASE_URL)
     factory = create_session_factory(DATABASE_URL, engine=engine)
     profile_id, service_id, monitor_id = uuid4(), uuid4(), uuid4()
     try:
         async with factory() as session:
             async with session.begin():
-                session.add(Profile(id=profile_id, auth_user_id=uuid4(), display_name="stopped result"))
+                session.add(
+                    Profile(id=profile_id, auth_user_id=uuid4(), display_name="probe failure")
+                )
                 await session.flush()
-                session.add(MonitoredService(id=service_id, profile_id=profile_id, slug=f"stopped-result-{uuid4().hex}", display_name="Stopped result", environment="test", active=True, secret_key_id="managed"))
+                session.add(
+                    MonitoredService(
+                        id=service_id,
+                        profile_id=profile_id,
+                        slug=f"probe-failure-{uuid4().hex}",
+                        display_name="Probe failure",
+                        environment="test",
+                        active=True,
+                        secret_key_id="managed",
+                    )
+                )
                 await session.flush()
-                session.add(WebsiteMonitor(id=monitor_id, service_id=service_id, url="https://example.com/", active=False))
+                session.add(
+                    WebsiteMonitor(
+                        id=monitor_id,
+                        service_id=service_id,
+                        url="https://failure.example/",
+                        next_check_at=datetime.now(UTC) - timedelta(minutes=1),
+                    )
+                )
+
+        async def failing_probe(url: str, **kwargs: object) -> ProbeResult:
+            raise RuntimeError("unexpected probe bug")
+
+        await run_uptime_cycle(
+            factory,
+            Settings(
+                environment="test", database_url=DATABASE_URL, auth_service_url="http://auth.test"
+            ),
+            probe=failing_probe,
+            monitor_ids={monitor_id},
+        )
+
         async with factory() as session:
-            async with session.begin():
-                recorded = await record_website_monitor_check(session, monitor_id=monitor_id, checked_at=datetime.now(UTC), result=ProbeResult(is_up=True, status_code=200, response_time_ms=1, failure_kind=None))
-        assert recorded is False
-        async with factory() as session:
-            count = await session.scalar(select(func.count()).select_from(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id))
-        assert count == 0
+            check = await session.scalar(
+                select(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id)
+            )
+        assert check is not None
+        assert check.is_up is False
+        assert check.failure_kind == "internal_error"
     finally:
         async with factory() as session:
             async with session.begin():
-                await session.execute(delete(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id))
+                await session.execute(
+                    delete(WebsiteMonitorCheck).where(WebsiteMonitorCheck.monitor_id == monitor_id)
+                )
                 await session.execute(delete(WebsiteMonitor).where(WebsiteMonitor.id == monitor_id))
-                await session.execute(delete(MonitoredService).where(MonitoredService.id == service_id))
+                await session.execute(
+                    delete(MonitoredService).where(MonitoredService.id == service_id)
+                )
                 await session.execute(delete(Profile).where(Profile.id == profile_id))
         await engine.dispose()
