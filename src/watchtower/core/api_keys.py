@@ -11,7 +11,11 @@ from pydantic import SecretStr
 _API_KEY_PATTERN = re.compile(
     r"^wtk_v1_(?P<prefix>[A-Za-z0-9_-]{16})\.(?P<secret>[A-Za-z0-9_-]{43})$"
 )
+_PROFILE_API_KEY_PATTERN = re.compile(
+    r"^wtp_v1_(?P<prefix>[A-Za-z0-9_-]{16})\.(?P<secret>[A-Za-z0-9_-]{43})$"
+)
 _DIGEST_DOMAIN = b"watchtower-api-key:v1\0"
+_PROFILE_DIGEST_DOMAIN = b"watchtower-profile-uptime-key:v1\0"
 
 
 class ApiKeyFormatError(ValueError):
@@ -45,6 +49,17 @@ def generate_api_key() -> GeneratedApiKey:
     )
 
 
+def generate_profile_api_key() -> GeneratedApiKey:
+    """Create a profile uptime key in its distinct credential namespace."""
+
+    public_prefix = secrets.token_urlsafe(12)
+    secret = secrets.token_urlsafe(32)
+    return GeneratedApiKey(
+        public_prefix=public_prefix,
+        token=SecretStr(f"wtp_v1_{public_prefix}.{secret}"),
+    )
+
+
 def parse_api_key(candidate: str) -> ParsedApiKey:
     """Reject malformed keys before database lookup or body consumption."""
 
@@ -61,6 +76,30 @@ def digest_api_key(token: str) -> bytes:
     """Return the deterministic SHA-256 verifier for a random 256-bit token."""
 
     return hashlib.sha256(_DIGEST_DOMAIN + token.encode("ascii")).digest()
+
+
+def parse_profile_api_key(candidate: str) -> ParsedApiKey:
+    """Reject candidates outside the bounded profile uptime key format."""
+
+    match = _PROFILE_API_KEY_PATTERN.fullmatch(candidate)
+    if match is None:
+        raise ApiKeyFormatError("Invalid API key format")
+    return ParsedApiKey(
+        public_prefix=match.group("prefix"),
+        secret=match.group("secret"),
+    )
+
+
+def digest_profile_api_key(token: str) -> bytes:
+    """Return the profile-key verifier in its dedicated digest domain."""
+
+    return hashlib.sha256(_PROFILE_DIGEST_DOMAIN + token.encode("ascii")).digest()
+
+
+def verify_profile_api_key(candidate: str, expected_digest: bytes) -> bool:
+    """Compare a profile-key verifier in constant time."""
+
+    return hmac.compare_digest(digest_profile_api_key(candidate), expected_digest)
 
 
 def verify_api_key(candidate: str, expected_digest: bytes) -> bool:
