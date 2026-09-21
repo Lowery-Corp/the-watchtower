@@ -77,6 +77,42 @@ def auth(token: str) -> dict[str, str]:
 
 
 @pytest.mark.integration
+async def test_profile_uptime_key_issue_reissue_and_listing_contract() -> None:
+    async with key_client() as (client, factory):
+        first = await client.post(
+            "/api/v1/api-keys",
+            json={"credential_kind": "profile_uptime"},
+            headers=auth("token-a"),
+        )
+        listed = await client.get("/api/v1/api-keys", headers=auth("token-a"))
+        second = await client.post(
+            "/api/v1/api-keys",
+            json={"credential_kind": "profile_uptime"},
+            headers=auth("token-a"),
+        )
+        async with factory() as session:
+            persisted = list(
+                await session.scalars(
+                    select(ApiKey).where(ApiKey.id == first.json()["id"])
+                )
+            ) if first.status_code == status.HTTP_201_CREATED else []
+
+    assert first.status_code == status.HTTP_201_CREATED
+    assert second.status_code == status.HTTP_200_OK
+    assert first.headers["Cache-Control"] == "no-store"
+    assert first.json()["credential_kind"] == "profile_uptime"
+    assert first.json()["api_key"].startswith("wtp_v1_")
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["created_at"] == first.json()["created_at"]
+    assert second.json()["api_key"] != first.json()["api_key"]
+    assert second.json()["rotated_at"] is not None
+    assert len(persisted) == 1
+    profile_rows = [item for item in listed.json() if item["credential_kind"] == "profile_uptime"]
+    assert len(profile_rows) == 1
+    assert "api_key" not in profile_rows[0]
+
+
+@pytest.mark.integration
 async def test_key_plaintext_is_returned_once_and_digest_only_is_persisted() -> None:
     async with key_client() as (client, factory):
         service = await client.post(

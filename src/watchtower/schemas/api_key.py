@@ -7,13 +7,26 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 class ApiKeyCreate(BaseModel):
-    """Request one events-write key bound to a machine source service."""
+    """Request a service-ingestion key or the singleton profile uptime key."""
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=100)
-    service_id: UUID
+    credential_kind: str = "service_ingestion"
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    service_id: UUID | None = None
     expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "ApiKeyCreate":
+        if self.credential_kind == "service_ingestion":
+            if self.name is None or self.service_id is None:
+                raise ValueError("Service ingestion keys require name and service_id")
+        elif self.credential_kind == "profile_uptime":
+            if any(value is not None for value in (self.name, self.service_id, self.expires_at)):
+                raise ValueError("Profile uptime key fields are managed by the server")
+        else:
+            raise ValueError("Unsupported credential kind")
+        return self
 
     @field_validator("expires_at")
     @classmethod
@@ -55,11 +68,13 @@ class ApiKeyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    credential_kind: str
     name: str
     public_prefix: str
     scopes: list[str]
     service_id: UUID | None
     created_at: datetime
+    rotated_at: datetime | None
     expires_at: datetime | None
     last_used_at: datetime | None
     revoked_at: datetime | None

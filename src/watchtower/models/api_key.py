@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -38,11 +39,31 @@ class ApiKey(Base):
             name="ck_api_key_expires_after_creation",
         ),
         CheckConstraint(
-            "service_id IS NOT NULL OR revoked_at IS NOT NULL",
-            name="ck_api_key_service_or_revoked",
+            "credential_kind IN ('service_ingestion', 'profile_uptime')",
+            name="ck_api_key_credential_kind",
+        ),
+        CheckConstraint(
+            "(credential_kind = 'service_ingestion' AND "
+            "(service_id IS NOT NULL OR revoked_at IS NOT NULL)) OR "
+            "(credential_kind = 'profile_uptime' AND service_id IS NULL AND "
+            "expires_at IS NULL AND revoked_at IS NULL)",
+            name="ck_api_key_kind_binding",
+        ),
+        CheckConstraint(
+            "(credential_kind = 'service_ingestion' AND "
+            "scopes = '[\"events:write\"]'::jsonb) OR "
+            "(credential_kind = 'profile_uptime' AND "
+            "scopes = '[\"uptime:read\"]'::jsonb)",
+            name="ck_api_key_kind_scopes",
         ),
         Index("ix_api_key_service_revoked", "service_id", "revoked_at"),
         Index("ix_api_key_profile", "profile_id"),
+        Index(
+            "uq_api_key_profile_uptime",
+            "profile_id",
+            unique=True,
+            postgresql_where=text("credential_kind = 'profile_uptime'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -50,6 +71,9 @@ class ApiKey(Base):
         ForeignKey("watchtower.profile.id", ondelete="RESTRICT"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    credential_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="service_ingestion", server_default="service_ingestion"
+    )
     token_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="1")
     public_prefix: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     secret_digest: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
@@ -60,6 +84,7 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

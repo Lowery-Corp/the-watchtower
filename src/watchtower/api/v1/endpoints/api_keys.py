@@ -18,6 +18,7 @@ from watchtower.services.api_keys import (
     ApplicationNotFoundError,
     get_profile_api_key,
     issue_api_key,
+    issue_profile_uptime_key,
     list_profile_api_keys,
     revoke_api_key,
     update_profile_api_key,
@@ -56,9 +57,16 @@ async def create_owned_api_key(
     """Create and display an application machine key exactly once."""
 
     try:
-        api_key, token = await issue_api_key(
-            session, profile_id=current.profile.id, payload=payload
-        )
+        if payload.credential_kind == "profile_uptime":
+            api_key, token, created = await issue_profile_uptime_key(
+                session, profile_id=current.profile.id
+            )
+            if not created:
+                response.status_code = status.HTTP_200_OK
+        else:
+            api_key, token = await issue_api_key(
+                session, profile_id=current.profile.id, payload=payload
+            )
     except ApplicationNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
@@ -68,7 +76,7 @@ async def create_owned_api_key(
     except ApiKeyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="API key name already exists",
+            detail=str(exc),
         ) from exc
     metadata = ApiKeyRead.model_validate(api_key)
     response.headers["Cache-Control"] = "no-store"
@@ -132,7 +140,7 @@ async def update_owned_api_key(
     except ApiKeyConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="API key update conflicts with existing restrictions",
+            detail=str(exc),
         ) from exc
     return ApiKeyRead.model_validate(api_key)
 
@@ -155,4 +163,9 @@ async def delete_owned_api_key(
         raise _not_found(exc) from exc
     except ApplicationAccessDeniedError as exc:
         raise _access_denied(exc) from exc
+    except ApiKeyConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

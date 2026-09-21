@@ -8,13 +8,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from watchtower.core.api_keys import digest_api_key, generate_api_key
+from watchtower.core.api_keys import (
+    digest_api_key,
+    digest_profile_api_key,
+    generate_api_key,
+    generate_profile_api_key,
+)
 from watchtower.models.api_key import ApiKey
 from watchtower.models.monitored_service import MonitoredService
+from watchtower.models.profile import Profile
 from watchtower.repositories.api_keys import (
     create_api_key,
     get_api_key_by_id,
+    get_profile_uptime_key,
     list_authorized_api_keys,
+    list_profile_uptime_keys,
 )
 from watchtower.repositories.monitored_services import has_application_permission
 from watchtower.schemas.api_key import ApiKeyCreate, ApiKeyUpdate
@@ -69,7 +77,11 @@ async def _get_bound_key(
     for_update: bool,
 ) -> ApiKey:
     api_key = await get_api_key_by_id(session, api_key_id=api_key_id, for_update=for_update)
-    if api_key is None or api_key.service_id is None:
+    if api_key is None:
+        raise ApiKeyNotFoundError("API key not found")
+    if api_key.credential_kind == "profile_uptime":
+        raise ApiKeyConflictError("Profile uptime keys can only be reissued")
+    if api_key.service_id is None:
         raise ApiKeyNotFoundError("API key not found")
     return api_key
 
@@ -105,6 +117,8 @@ async def issue_api_key(
 
     generated = generate_api_key()
     token = generated.token.get_secret_value()
+    assert payload.service_id is not None
+    assert payload.name is not None
     try:
         async with session.begin():
             application = await _lock_application(session, application_id=payload.service_id)
@@ -132,13 +146,55 @@ async def issue_api_key(
     return api_key, generated.token
 
 
+async def issue_profile_uptime_key(
+    session: AsyncSession, *, profile_id: UUID
+) -> tuple[ApiKey, SecretStr, bool]:
+    """Issue or atomically reissue the singleton profile uptime credential."""
+
+    generated = generate_profile_api_key()
+    token = generated.token.get_secret_value()
+    async with session.begin():
+        profile = await session.scalar(
+            select(Profile).where(Profile.id == profile_id).with_for_update()
+        )
+        if profile is None:
+            raise ApiKeyNotFoundError("Profile not found")
+        if profile.status != "active":
+            raise ApplicationAccessDeniedError("Profile access denied")
+        api_key = await get_profile_uptime_key(
+            session, profile_id=profile_id, for_update=True
+        )
+        created = api_key is None
+        if api_key is None:
+            api_key = ApiKey(
+                profile_id=profile_id,
+                name="Profile uptime API",
+                credential_kind="profile_uptime",
+                public_prefix=generated.public_prefix,
+                secret_digest=digest_profile_api_key(token),
+                scopes=["uptime:read"],
+                service_id=None,
+            )
+            session.add(api_key)
+        else:
+            api_key.public_prefix = generated.public_prefix
+            api_key.secret_digest = digest_profile_api_key(token)
+            api_key.rotated_at = datetime.now(UTC)
+            api_key.last_used_at = None
+        await session.flush()
+        await session.refresh(api_key)
+    return api_key, generated.token, created
+
+
 async def list_profile_api_keys(session: AsyncSession, *, profile_id: UUID) -> list[ApiKey]:
     """List service-bound keys in applications the actor may read."""
 
     async with session.begin():
-        return await list_authorized_api_keys(
+        service_keys = await list_authorized_api_keys(
             session, profile_id=profile_id, permission_name="api_keys.read"
         )
+        profile_keys = await list_profile_uptime_keys(session, profile_id=profile_id)
+        return sorted([*service_keys, *profile_keys], key=lambda key: (key.created_at, key.id))
 
 
 async def get_profile_api_key(
