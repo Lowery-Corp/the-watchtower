@@ -1,4 +1,4 @@
-FROM node:20-alpine AS tools
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS tools
 
 WORKDIR /app
 RUN chown node:node /app
@@ -10,9 +10,11 @@ COPY --chown=node:node . .
 FROM tools AS build
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
-COPY --chown=101:101 --chmod=644 nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build --chown=101:101 /app/dist /usr/share/nginx/html
-EXPOSE 8080
-HEALTHCHECK --interval=5s --timeout=4s --retries=12 --start-period=5s \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --chown=node:node server.mjs ./server.mjs
+USER node
+EXPOSE 5173
+CMD ["node", "server.mjs"]

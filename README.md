@@ -5,25 +5,24 @@ Full-stack tenant-aware event logging and uptime monitoring control plane. Its J
 ## Runtime architecture
 
 ```text
-browser --> Nginx edge :8010 --> static React image :8080
-   |               |
-   |               +--> /api/* --> FastAPI :8000 --stable auth UUID--> local profile
-   |                                      |
+browser --> frontend static server :5174
+   |              |
+   |              +--> /api/* --> FastAPI (loopback :8001) --stable auth UUID--> local profile
+   |                                     |
 machine --managed API key----------------+--> profile-scoped transaction
 legacy ----mapped HMAC--------------------+       |--> immutable PostgreSQL event
                                                  +--> Kafka-ready outbox row
 ```
 
-The browser and API share one origin at the Nginx edge. FastAPI stores the external session only in an HttpOnly cookie, while React keeps sanitized current-user metadata in memory. Kafka publishing is deliberately decoupled from the request transaction and remains the next broker-integration milestone.
+The production Node frontend server serves the built Vite bundle and forwards browser `/api/*` requests to FastAPI over the Compose network. FastAPI stores the external session only in an HttpOnly cookie, while React keeps sanitized current-user metadata in memory. Kafka publishing is deliberately decoupled from the request transaction and remains the next broker-integration milestone.
 
 Compose runs:
 
-- `db`: PostgreSQL 17 with a persistent named volume and host port `5433` by default; bind or firewall that development port appropriately.
+- `db`: PostgreSQL 17 with a persistent named volume and loopback-only host port `5433` by default.
 - `migrate`: one-shot `alembic upgrade head` service.
-- `api`: internal-only, non-root FastAPI/uvicorn runtime on Compose port `8000`.
-- `frontend`: non-root Nginx runtime serving the prebuilt React bundle on internal Compose port `8080`.
+- `api`: non-root FastAPI/uvicorn runtime published on host-loopback port `8001` by default; remote clients must use a trusted TLS ingress.
+- `frontend`: non-root Node static runtime serving the built Vite bundle on host port `5174` by default; it forwards `/api/*` to the API service over the Compose network and rejects request bodies over 256 KiB by default.
 - `frontend-tools`: profile-gated Node image containing frontend tests, lint, build, and audit tooling.
-- `proxy`: non-root Nginx edge exposed on host port `8010` by default; it serves the frontend, routes `/api/*` to FastAPI, applies the webhook body cap, and enforces the per-IP webhook limit.
 - `test`: profile-gated image containing the test, lint, and type-check tools.
 
 ## Prerequisites
@@ -45,15 +44,14 @@ cp .env.example .env
 The application reads `WATCHTOWER_`-prefixed settings. Never commit `.env`.
 
 - `WATCHTOWER_AUTH_SERVICE_URL` points to the external DB Management Auth API. Browser tokens are held only in an HttpOnly cookie and are never persisted by Watchtower.
-- `WATCHTOWER_BROWSER_ALLOWED_ORIGINS` is a JSON array of exact trusted origins. It must include every URL from which operators load the frontend, including the scheme and published edge port. Cookie-authenticated mutations fail closed unless the request supplies one of these origins.
+- `WATCHTOWER_BROWSER_ALLOWED_ORIGINS` is a JSON array of exact trusted origins. It must include every URL from which operators load the frontend, including the scheme and published frontend port. The checked-in defaults include `https://dwatchtower.johnmgrubbs.io`. Cookie-authenticated mutations fail closed unless the request supplies one of these origins.
 - `WATCHTOWER_SESSION_COOKIE_SECURE` is `false` only for local HTTP development. Set it to `true` behind production HTTPS.
-- The browser UI and API intentionally use the same origin. Separate-origin deployment is not supported without adding credentialed CORS policy to FastAPI.
 - `WATCHTOWER_WEBHOOK_SECRETS` is a JSON object mapping legacy service slugs to HMAC secrets.
 - `WATCHTOWER_LEGACY_WEBHOOK_PROFILES` is a JSON object mapping every enabled legacy slug to its owning profile UUID. A secret without an explicit profile mapping cannot authenticate.
 
 Managed API keys are created through the authenticated API. Watchtower returns the raw key once with `Cache-Control: no-store`, then stores only a version, non-secret lookup prefix, and domain-separated SHA-256 verifier. Lost keys cannot be recovered; create a replacement and revoke the old metadata row. Service binding and scopes are immutable, revocation is permanent, and ordinary updates cannot extend or remove an expiry.
 
-The default signature freshness window is 300 seconds and the default maximum raw webhook body is 262,144 bytes (256 KiB). The application allows 60 successfully authenticated requests per managed key or mapped legacy sender per 60-second process-local window. Nginx independently limits the webhook path to 60 requests per minute per client IP with a burst of 20; production ingress must preserve an authoritative client address rather than trusting caller-supplied forwarding headers. Managed bearer keys require TLS at or before the trusted edge; the Compose Nginx listener itself is HTTP and must not be exposed directly to an untrusted network.
+The default signature freshness window is 300 seconds and the default maximum raw webhook body is 262,144 bytes (256 KiB). The application enforces a shared PostgreSQL-backed budget of 60 successfully authenticated requests per managed key or mapped legacy sender per 60-second window. Managed bearer keys require TLS at or before a trusted production edge; the Compose API listener is HTTP and must not be exposed directly to an untrusted network.
 
 ## Build and start
 
@@ -61,19 +59,19 @@ The default signature freshness window is 300 seconds and the default maximum ra
 cd /home/lowery/the-watchtower
 docker compose config -q
 docker compose --profile test build
-docker compose up -d db proxy
+docker compose up -d --build db api frontend
 docker compose ps
 ```
 
-The migration service must complete successfully before the API starts. Open the operator UI at `http://127.0.0.1:8010/`; anonymous users are redirected to `/login`. The Home, Monitored Services, and API Keys routes require a valid external-auth browser session.
+The migration service must complete successfully before the API starts. Open the operator UI at `http://127.0.0.1:5174/`; anonymous users are redirected to `/login`. The API is published only on host loopback at `http://127.0.0.1:8001/` for local health checks, integrations, and webhook senders. Remote integrations and webhook senders must use a separately configured trusted TLS ingress; port `8001` is intentionally not exposed on external host interfaces. The Home, Monitored Services, and API Keys routes require a valid external-auth browser session.
 
 ## Operational endpoints
 
 ```text
-GET http://127.0.0.1:8010/api/v1/health
-GET http://127.0.0.1:8010/api/v1/health/live
-GET http://127.0.0.1:8010/api/v1/health/ready
-GET http://127.0.0.1:8010/api/v1/openapi.json
+GET http://127.0.0.1:8001/api/v1/health
+GET http://127.0.0.1:8001/api/v1/health/live
+GET http://127.0.0.1:8001/api/v1/health/ready
+GET http://127.0.0.1:8001/api/v1/openapi.json
 ```
 
 - `health`: basic API status.
@@ -109,7 +107,7 @@ The protected React route `/services` provides create, list, edit, deactivate, a
 ## Event ingestion
 
 ```text
-POST http://127.0.0.1:8010/api/v1/webhooks/events
+POST http://127.0.0.1:8001/api/v1/webhooks/events
 ```
 
 The endpoint always requires `X-Watchtower-Service` and accepts one of two authentication modes:
@@ -174,8 +172,8 @@ After connecting through Tailscale, the job pulls the latest images, changes to 
 ## Logs and shutdown
 
 ```bash
-docker compose logs --tail 100 proxy frontend api
-docker compose stop proxy frontend api db
+docker compose logs --tail 100 frontend api
+docker compose stop frontend api db
 ```
 
 Do not run `docker compose down -v` unless permanent deletion of the PostgreSQL volume is explicitly intended.

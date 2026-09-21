@@ -64,14 +64,18 @@ _AUTH_HEADER_PARAMETERS: list[dict[str, Any]] = [
         "name": "X-Watchtower-Timestamp",
         "in": "header",
         "required": False,
-        "description": "Legacy HMAC Unix timestamp; required with signature when no managed key is sent",
+        "description": (
+            "Legacy HMAC Unix timestamp; required with signature when no managed key is sent"
+        ),
         "schema": {"type": "string", "pattern": r"^\d+$"},
     },
     {
         "name": "X-Watchtower-Signature",
         "in": "header",
         "required": False,
-        "description": "Legacy HMAC-SHA256 signature; required with timestamp when no managed key is sent",
+        "description": (
+            "Legacy HMAC-SHA256 signature; required with timestamp when no managed key is sent"
+        ),
         "schema": {"type": "string", "pattern": r"^v1=[0-9a-f]{64}$"},
     },
 ]
@@ -79,10 +83,8 @@ _WEBHOOK_OPENAPI_EXTRA: dict[str, Any] = {
     "parameters": _AUTH_HEADER_PARAMETERS,
     "requestBody": {
         "required": True,
-        "content": {
-            "application/json": {"schema": EventEnvelope.model_json_schema()}
-        },
-    }
+        "content": {"application/json": {"schema": EventEnvelope.model_json_schema()}},
+    },
 }
 
 

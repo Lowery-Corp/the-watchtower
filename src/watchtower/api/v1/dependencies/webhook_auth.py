@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from secrets import token_urlsafe
-from typing import cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
@@ -17,7 +17,6 @@ from watchtower.core.api_keys import (
     verify_api_key,
 )
 from watchtower.core.config import Settings
-from watchtower.core.rate_limit import FixedWindowRateLimiter
 from watchtower.core.security import (
     WebhookAuthenticationError,
     validate_service_identity,
@@ -26,7 +25,8 @@ from watchtower.core.security import (
 )
 from watchtower.db.dependencies import get_db_session
 from watchtower.repositories.api_keys import get_api_key_by_prefix
-from watchtower.repositories.monitored_services import get_monitored_service_by_slug
+from watchtower.repositories.monitored_services import get_application_by_id
+from watchtower.services.webhook_rate_limits import consume_webhook_rate_limit
 
 _GENERIC_AUTH_ERROR = "Invalid webhook authentication"
 _DUMMY_SECRET = token_urlsafe(32)
@@ -82,9 +82,17 @@ def _unauthorized(exc: Exception | None = None) -> HTTPException:
     )
 
 
-async def _consume_rate_limit(request: Request, identity: str) -> None:
-    limiter = cast(FixedWindowRateLimiter, request.app.state.webhook_rate_limiter)
-    retry_after = await limiter.consume(identity)
+async def _consume_rate_limit(
+    session: AsyncSession,
+    settings: Settings,
+    identity: str,
+) -> None:
+    retry_after = await consume_webhook_rate_limit(
+        session,
+        identity=identity,
+        max_requests=settings.webhook_rate_limit_requests,
+        window_seconds=settings.webhook_rate_limit_window_seconds,
+    )
     if retry_after is not None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -98,8 +106,8 @@ async def _authenticate_managed_key(
     session: AsyncSession,
     source: str,
     token: str,
-) -> tuple[UUID, UUID]:
-    """Resolve and validate one managed key before request-body consumption."""
+) -> tuple[UUID, UUID, str]:
+    """Resolve identity from a managed key's database service binding."""
 
     try:
         validate_service_identity(source)
@@ -109,12 +117,8 @@ async def _authenticate_managed_key(
 
     now = datetime.now(UTC)
     async with session.begin():
-        api_key = await get_api_key_by_prefix(
-            session, public_prefix=parsed.public_prefix
-        )
-        expected_digest = (
-            api_key.secret_digest if api_key is not None else _DUMMY_API_KEY_DIGEST
-        )
+        api_key = await get_api_key_by_prefix(session, public_prefix=parsed.public_prefix)
+        expected_digest = api_key.secret_digest if api_key is not None else _DUMMY_API_KEY_DIGEST
         verified = verify_api_key(token, expected_digest)
         if (
             api_key is None
@@ -122,27 +126,20 @@ async def _authenticate_managed_key(
             or api_key.revoked_at is not None
             or (api_key.expires_at is not None and api_key.expires_at <= now)
             or "events:write" not in api_key.scopes
+            or api_key.service_id is None
         ):
             raise _unauthorized()
 
-        service = await get_monitored_service_by_slug(
-            session,
-            profile_id=api_key.profile_id,
-            slug=source,
-        )
-        if (
-            service is None
-            or not service.active
-            or (api_key.service_id is not None and api_key.service_id != service.id)
-        ):
+        service = await get_application_by_id(session, application_id=api_key.service_id)
+        if service is None or not service.active or source != service.slug:
             raise _unauthorized()
 
-        return api_key.profile_id, api_key.id
+        return service.profile_id, api_key.id, service.slug
 
 
 async def authenticate_webhook(
     request: Request,
-    session: AsyncSession = Depends(get_db_session),
+    session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> AuthenticatedWebhook:
     """Authenticate managed API keys or explicitly mapped legacy HMAC senders."""
 
@@ -155,16 +152,16 @@ async def authenticate_webhook(
     managed_token = managed_values[0] if managed_values else None
 
     if managed_token is not None:
-        profile_id, api_key_id = await _authenticate_managed_key(
+        profile_id, api_key_id, database_source = await _authenticate_managed_key(
             session=session,
             source=source,
             token=managed_token,
         )
-        await _consume_rate_limit(request, f"api-key:{api_key_id}")
+        await _consume_rate_limit(session, settings, f"managed:{api_key_id}")
         body = await read_limited_body(request, settings.max_webhook_body_bytes)
         return AuthenticatedWebhook(
             profile_id=profile_id,
-            source=source,
+            source=database_source,
             body=body,
             api_key_id=api_key_id,
             api_key_token=SecretStr(managed_token),
@@ -187,8 +184,8 @@ async def authenticate_webhook(
         raise _unauthorized(exc) from exc
 
     configured_secret = settings.webhook_secrets.get(source)
-    profile_id = settings.legacy_webhook_profiles.get(source)
-    if configured_secret is None or profile_id is None:
+    legacy_profile_id = settings.legacy_webhook_profiles.get(source)
+    if configured_secret is None or legacy_profile_id is None:
         raise _unauthorized()
 
     body = await read_limited_body(request, settings.max_webhook_body_bytes)
@@ -204,5 +201,9 @@ async def authenticate_webhook(
     except WebhookAuthenticationError as exc:
         raise _unauthorized(exc) from exc
 
-    await _consume_rate_limit(request, f"legacy:{profile_id}:{source}")
-    return AuthenticatedWebhook(profile_id=profile_id, source=source, body=body)
+    await _consume_rate_limit(
+        session,
+        settings,
+        f"legacy:{legacy_profile_id}:{source}",
+    )
+    return AuthenticatedWebhook(profile_id=legacy_profile_id, source=source, body=body)

@@ -9,7 +9,6 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from watchtower.core.api_keys import verify_api_key
-
 from watchtower.messaging.topics import RAW_EVENTS_TOPIC
 from watchtower.repositories.api_keys import get_api_key_for_ingestion
 from watchtower.repositories.events import create_event_if_absent
@@ -67,45 +66,38 @@ async def ingest_event(
 
     async with session.begin():
         managed_key = None
+        service = None
         if api_key_id is not None and api_key_token is not None:
-            managed_key = await get_api_key_for_ingestion(
+            service = await get_monitored_service_by_slug(
                 session,
                 profile_id=profile_id,
-                api_key_id=api_key_id,
+                slug=authenticated_source,
+                for_update=True,
             )
+            managed_key = await get_api_key_for_ingestion(session, api_key_id=api_key_id)
             now = datetime.now(UTC)
             if (
                 managed_key is None
                 or managed_key.token_version != 1
-                or not verify_api_key(
-                    api_key_token.get_secret_value(), managed_key.secret_digest
-                )
+                or not verify_api_key(api_key_token.get_secret_value(), managed_key.secret_digest)
                 or managed_key.revoked_at is not None
-                or (
-                    managed_key.expires_at is not None
-                    and managed_key.expires_at <= now
-                )
+                or (managed_key.expires_at is not None and managed_key.expires_at <= now)
                 or "events:write" not in managed_key.scopes
+                or managed_key.service_id is None
             ):
                 raise ManagedKeyAuthenticationError("Managed key is no longer valid")
-
-        service = await get_monitored_service_by_slug(
-            session,
-            profile_id=profile_id,
-            slug=authenticated_source,
-        )
-        if service is None:
-            raise UnknownSourceError("Event source is not registered")
-        if not service.active:
-            raise InactiveSourceError("Event source is not active")
-        if managed_key is not None and (
-            managed_key.profile_id != profile_id
-            or (
-                managed_key.service_id is not None
-                and managed_key.service_id != service.id
+            if service is None or not service.active or managed_key.service_id != service.id:
+                raise ManagedKeyAuthenticationError("Managed key binding is invalid")
+        else:
+            service = await get_monitored_service_by_slug(
+                session,
+                profile_id=profile_id,
+                slug=authenticated_source,
             )
-        ):
-            raise ManagedKeyAuthenticationError("Managed key binding is invalid")
+            if service is None:
+                raise UnknownSourceError("Event source is not registered")
+            if not service.active:
+                raise InactiveSourceError("Event source is not active")
 
         raw_payload = envelope.model_dump(mode="json")
         event, created = await create_event_if_absent(
@@ -118,9 +110,7 @@ async def ingest_event(
         )
         if not created:
             if event.payload != raw_payload:
-                raise EventConflictError(
-                    "Source event ID already exists with different content"
-                )
+                raise EventConflictError("Source event ID already exists with different content")
             if managed_key is not None:
                 managed_key.last_used_at = datetime.now(UTC)
                 await session.flush()

@@ -1,6 +1,7 @@
 """Unit tests for the external authentication service adapter."""
 
-from collections.abc import Awaitable, Callable
+import json
+from collections.abc import Callable, Coroutine
 
 import httpx
 import pytest
@@ -13,7 +14,10 @@ from watchtower.clients.auth_service import (
     AuthServiceUnavailable,
 )
 
-Handler = Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]]
+Handler = (
+    Callable[[httpx.Request], httpx.Response]
+    | Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
+)
 
 
 def client_for(handler: Handler) -> tuple[AuthServiceClient, httpx.AsyncClient]:
@@ -29,7 +33,11 @@ async def test_login_returns_typed_user_and_secret_token() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v1/auth/login"
         assert request.method == "POST"
-        assert request.read() == b'{"email":"user@example.com","password":"not-logged"}'
+        assert json.loads(request.read()) == {
+            "email": "user@example.com",
+            "password": "not-logged",
+            "internal": True,
+        }
         return httpx.Response(
             200,
             json={
@@ -56,7 +64,10 @@ async def test_login_returns_typed_user_and_secret_token() -> None:
 @pytest.mark.asyncio
 async def test_current_user_maps_unauthorized_without_exposing_token() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["Authorization"] == "Bearer invalid-secret"
+        assert request.url.path == "/api/v1/auth/me"
+        assert request.method == "POST"
+        assert request.headers["token"] == "invalid-secret"
+        assert "Authorization" not in request.headers
         return httpx.Response(401, json={"detail": "Invalid or expired token"})
 
     client, http_client = client_for(handler)

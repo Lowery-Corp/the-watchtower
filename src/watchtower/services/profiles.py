@@ -7,6 +7,10 @@ from watchtower.repositories.profiles import get_or_create_profile
 from watchtower.schemas.auth import AuthenticatedUser
 
 
+class ProfileAccessDeniedError(Exception):
+    """The external identity has no active local Watchtower access."""
+
+
 async def provision_profile_for_user(
     session: AsyncSession,
     user: AuthenticatedUser,
@@ -14,8 +18,11 @@ async def provision_profile_for_user(
     """Provision one profile for a validated external identity atomically."""
 
     async with session.begin():
-        return await get_or_create_profile(
+        profile = await get_or_create_profile(
             session,
             auth_user_id=user.id,
             display_name=user.username,
         )
+    if profile.status != "active":
+        raise ProfileAccessDeniedError
+    return profile

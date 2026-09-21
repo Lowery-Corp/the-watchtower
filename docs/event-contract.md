@@ -119,7 +119,7 @@ signature = "v1=" + hmac.new(
 ).hexdigest()
 
 request = urllib.request.Request(
-    "http://127.0.0.1:8010/api/v1/webhooks/events",
+    "http://127.0.0.1:8001/api/v1/webhooks/events",
     data=body,
     method="POST",
     headers={
@@ -155,8 +155,8 @@ A retry with the same authenticated source and source `event_id` returns HTTP `2
 - `409`: the authenticated source reused an existing source event ID with different content.
 - `413`: raw request body exceeds the configured limit.
 - `422`: authenticated body is not a valid version-one event envelope.
-- `429`: the application or edge request budget is exhausted; callers should honor `Retry-After` when present.
+- `429`: the PostgreSQL-backed application request budget is exhausted; callers should honor `Retry-After` when present. A separately deployed TLS edge may impose additional limits and is required for remote callers because the direct Compose API port is bound to host loopback.
 
-The default application budget is 60 authenticated requests per managed key or mapped legacy sender per 60-second process-local window. The Compose Nginx edge independently enforces 60 requests per minute per client IP with a burst of 20 and rejects bodies above 256 KiB before proxying. Multi-replica production deployments require an equivalent shared ingress or distributed application limit because the in-process limiter is not global.
+The default application budget is 60 authenticated requests per managed key or mapped legacy sender per 60-second PostgreSQL-backed window. FastAPI rejects request bodies above 256 KiB. Production deployments should add a trusted TLS ingress with any additional network-level controls required by the deployment environment.
 
 Authentication failures deliberately use one generic message. Request bodies and authentication headers must not be logged.

@@ -18,10 +18,8 @@ class Settings(BaseSettings):
     )
 
     environment: Literal["local", "test", "staging", "production"] = "local"
-    database_url: str = (
-        "postgresql+asyncpg://watchtower:watchtower@db:5432/watchtower"
-    )
-    auth_service_url: str = "http://100.97.236.10:8000"
+    database_url: str = "postgresql+asyncpg://watchtower:watchtower@db:5432/watchtower"
+    auth_service_url: str = "https://dauth.johnmgrubbs.io"
     auth_service_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     session_cookie_name: str = Field(default="watchtower_session", min_length=1, max_length=64)
     session_cookie_max_age_seconds: int = Field(default=3600, ge=60, le=86_400)
@@ -34,6 +32,15 @@ class Settings(BaseSettings):
     max_webhook_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
     webhook_rate_limit_requests: int = Field(default=60, ge=1, le=100_000)
     webhook_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    uptime_check_interval_seconds: int = Field(default=60, ge=10, le=86_400)
+    uptime_check_timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    uptime_worker_batch_size: int = Field(default=50, ge=1, le=1000)
+    uptime_worker_concurrency: int = Field(default=10, ge=1, le=100)
+    uptime_history_retention_days: int = Field(default=30, ge=1, le=365)
+    uptime_worker_poll_seconds: float = Field(default=5.0, ge=0.25, le=60)
+    uptime_max_active_monitors_per_profile: int = Field(default=100, ge=1, le=1000)
+    uptime_monitor_create_rate_limit_requests: int = Field(default=20, ge=1, le=1000)
+    uptime_monitor_create_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
 
 @lru_cache

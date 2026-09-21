@@ -22,6 +22,7 @@ from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
+from watchtower.models.webhook_rate_limit import WebhookRateLimit
 from watchtower.repositories.monitored_services import create_monitored_service
 
 DATABASE_URL = os.environ.get(
@@ -117,25 +118,24 @@ async def webhook_client(
             try:
                 yield client, source
             finally:
-                if service is not None:
-                    async with factory() as session:
-                        async with session.begin():
+                async with factory() as session:
+                    async with session.begin():
+                        await session.execute(
+                            delete(WebhookRateLimit).where(
+                                WebhookRateLimit.identity == f"legacy:{profile.id}:{source}"
+                            )
+                        )
+                        if service is not None:
                             await session.execute(
-                                delete(OutboxMessage).where(
-                                    OutboxMessage.service_id == service.id
-                                )
+                                delete(OutboxMessage).where(OutboxMessage.service_id == service.id)
                             )
                             await session.execute(
                                 delete(Event).where(Event.service_id == service.id)
                             )
                             await session.execute(
-                                delete(MonitoredService).where(
-                                    MonitoredService.id == service.id
-                                )
+                                delete(MonitoredService).where(MonitoredService.id == service.id)
                             )
-                            await session.execute(
-                                delete(Profile).where(Profile.id == profile.id)
-                            )
+                            await session.execute(delete(Profile).where(Profile.id == profile.id))
 
 
 @pytest.mark.integration
@@ -144,12 +144,8 @@ async def test_openapi_documents_webhook_body_and_response_contract() -> None:
     try:
         operation = app.openapi()["paths"]["/api/v1/webhooks/events"]["post"]
         responses = operation["responses"]
-        request_schema = operation["requestBody"]["content"]["application/json"][
-            "schema"
-        ]
-        parameters = {
-            parameter["name"]: parameter for parameter in operation["parameters"]
-        }
+        request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
 
         assert {"202", "401", "403", "409", "413", "422", "429"} <= set(responses)
         assert request_schema["title"] == "EventEnvelope"
@@ -161,9 +157,7 @@ async def test_openapi_documents_webhook_body_and_response_contract() -> None:
         ):
             assert parameters[header]["in"] == "header"
             assert parameters[header]["required"] is False
-        assert responses["429"]["headers"]["Retry-After"]["schema"]["type"] == (
-            "integer"
-        )
+        assert responses["429"]["headers"]["Retry-After"]["schema"]["type"] == ("integer")
     finally:
         await app.state.engine.dispose()
 
@@ -190,9 +184,7 @@ async def test_duplicate_retry_is_deterministic() -> None:
         body = event_body(source)
         headers = signed_headers(source, body)
         first = await client.post("/api/v1/webhooks/events", content=body, headers=headers)
-        duplicate = await client.post(
-            "/api/v1/webhooks/events", content=body, headers=headers
-        )
+        duplicate = await client.post("/api/v1/webhooks/events", content=body, headers=headers)
 
     assert first.status_code == status.HTTP_202_ACCEPTED
     assert duplicate.status_code == status.HTTP_202_ACCEPTED
@@ -221,9 +213,7 @@ async def test_reused_event_id_with_changed_content_returns_conflict() -> None:
 
     assert first.status_code == status.HTTP_202_ACCEPTED
     assert conflict.status_code == status.HTTP_409_CONFLICT
-    assert conflict.json() == {
-        "detail": "Source event ID already exists with different content"
-    }
+    assert conflict.json() == {"detail": "Source event ID already exists with different content"}
 
 
 @pytest.mark.integration
@@ -344,6 +334,91 @@ async def test_application_rate_limit_returns_retryable_429() -> None:
     assert limited.status_code == status.HTTP_429_TOO_MANY_REQUESTS
     assert limited.json() == {"detail": "Webhook rate limit exceeded"}
     assert int(limited.headers["Retry-After"]) >= 1
+
+
+@pytest.mark.integration
+async def test_two_app_instances_share_one_webhook_rate_limit_budget() -> None:
+    source = f"shared-budget-{uuid4().hex}"
+    profile = Profile(
+        id=uuid4(),
+        auth_user_id=uuid4(),
+        display_name="Shared budget owner",
+    )
+    settings = Settings(
+        environment="test",
+        database_url=DATABASE_URL,
+        webhook_secrets={source: SecretStr(SECRET)},
+        legacy_webhook_profiles={source: profile.id},
+        webhook_rate_limit_requests=1,
+    )
+    first_app = create_app(settings)
+    second_app = create_app(settings)
+    factory = cast(async_sessionmaker[AsyncSession], first_app.state.session_factory)
+    service: MonitoredService | None = None
+
+    try:
+        async with factory() as session:
+            async with session.begin():
+                session.add(profile)
+                await session.flush()
+                service = await create_monitored_service(
+                    session,
+                    profile_id=profile.id,
+                    slug=source,
+                    display_name="Shared budget service",
+                    environment="test",
+                    secret_key_id="primary",
+                )
+        async with (
+            first_app.router.lifespan_context(first_app),
+            second_app.router.lifespan_context(second_app),
+            AsyncClient(
+                transport=ASGITransport(app=first_app, raise_app_exceptions=False),
+                base_url="http://first",
+            ) as first_client,
+            AsyncClient(
+                transport=ASGITransport(app=second_app, raise_app_exceptions=False),
+                base_url="http://second",
+            ) as second_client,
+        ):
+            first_body = event_body(source)
+            second_body = event_body(source)
+            first = await first_client.post(
+                "/api/v1/webhooks/events",
+                content=first_body,
+                headers=signed_headers(source, first_body),
+            )
+            limited = await second_client.post(
+                "/api/v1/webhooks/events",
+                content=second_body,
+                headers=signed_headers(source, second_body),
+            )
+
+        assert first.status_code == status.HTTP_202_ACCEPTED
+        assert limited.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        assert limited.json() == {"detail": "Webhook rate limit exceeded"}
+        assert int(limited.headers["Retry-After"]) >= 1
+    finally:
+        try:
+            async with factory() as session:
+                async with session.begin():
+                    await session.execute(
+                        delete(WebhookRateLimit).where(
+                            WebhookRateLimit.identity == f"legacy:{profile.id}:{source}"
+                        )
+                    )
+                    if service is not None:
+                        await session.execute(
+                            delete(OutboxMessage).where(OutboxMessage.service_id == service.id)
+                        )
+                        await session.execute(delete(Event).where(Event.service_id == service.id))
+                        await session.execute(
+                            delete(MonitoredService).where(MonitoredService.id == service.id)
+                        )
+                    await session.execute(delete(Profile).where(Profile.id == profile.id))
+        finally:
+            await first_app.state.engine.dispose()
+            await second_app.state.engine.dispose()
 
 
 @pytest.mark.integration

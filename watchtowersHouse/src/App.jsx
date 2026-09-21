@@ -3,8 +3,10 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import AppLayout from "./layouts/AppLayout";
 import Home from "./pages/Home";
 import ApiKeys from "./pages/ApiKeys";
+import About from "./pages/About";
 import Login from "./pages/Login";
 import MonitoredServices from "./pages/MonitoredServices";
+import UptimeMonitors from "./pages/UptimeMonitors";
 
 function NotFound() {
   return (
@@ -23,7 +25,9 @@ export default function App() {
           <Route index element={<Navigate to="/home" replace />} />
           <Route path="home" element={<Home />} />
           <Route path="services" element={<MonitoredServices />} />
+          <Route path="uptime" element={<UptimeMonitors />} />
           <Route path="api-keys" element={<ApiKeys />} />
+          <Route path="about" element={<About />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFound />} />

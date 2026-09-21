@@ -42,7 +42,7 @@ class AuthServiceClient:
         response = await self._request(
             "POST",
             "/api/v1/auth/login",
-            json={"email": email, "password": password},
+            json={"email": email, "password": password, "internal": True},
         )
         if response.status_code == httpx.codes.UNAUTHORIZED:
             raise AuthServiceUnauthorized("Authentication failed")
@@ -64,9 +64,9 @@ class AuthServiceClient:
 
     async def get_current_user(self, token: str) -> AuthenticatedUser:
         response = await self._request(
-            "GET",
+            "POST",
             "/api/v1/auth/me",
-            headers=self._bearer_headers(token),
+            headers={"token": token},
         )
         if response.status_code == httpx.codes.UNAUTHORIZED:
             raise AuthServiceUnauthorized("Authentication failed")

@@ -17,7 +17,10 @@ from watchtower.clients.auth_service import (
 from watchtower.db.dependencies import get_db_session
 from watchtower.models.profile import Profile
 from watchtower.schemas.auth import AuthenticatedUser
-from watchtower.services.profiles import provision_profile_for_user
+from watchtower.services.profiles import (
+    ProfileAccessDeniedError,
+    provision_profile_for_user,
+)
 
 
 @dataclass(frozen=True)
@@ -111,5 +114,11 @@ async def get_current_profile(
 ) -> CurrentProfile:
     """Provision and return the caller's profile."""
 
-    profile = await provision_profile_for_user(session, authenticated.user)
+    try:
+        profile = await provision_profile_for_user(session, authenticated.user)
+    except ProfileAccessDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Profile access denied",
+        ) from exc
     return CurrentProfile(authenticated=authenticated, profile=profile)

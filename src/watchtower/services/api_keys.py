@@ -1,29 +1,98 @@
-"""Profile-owned API-key lifecycle use cases."""
+"""Application-scoped API-key lifecycle use cases."""
 
 from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from watchtower.core.api_keys import digest_api_key, generate_api_key
 from watchtower.models.api_key import ApiKey
+from watchtower.models.monitored_service import MonitoredService
 from watchtower.repositories.api_keys import (
     create_api_key,
     get_api_key_by_id,
-    list_api_keys,
+    list_authorized_api_keys,
 )
-from watchtower.repositories.monitored_services import get_monitored_service_by_id
+from watchtower.repositories.monitored_services import has_application_permission
 from watchtower.schemas.api_key import ApiKeyCreate, ApiKeyUpdate
 
 
 class ApiKeyNotFoundError(LookupError):
-    """The key or requested service is not owned by the current profile."""
+    """The requested API key does not exist."""
+
+
+class ApplicationNotFoundError(LookupError):
+    """The requested application does not exist."""
+
+
+class ApplicationAccessDeniedError(PermissionError):
+    """The human actor lacks permission on the key's application."""
 
 
 class ApiKeyConflictError(ValueError):
-    """The requested key metadata conflicts inside the profile."""
+    """The requested key metadata conflicts with an explicit API-key rule."""
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str | None:
+    """Extract a PostgreSQL constraint name without broad error translation."""
+
+    for candidate in (exc.orig, getattr(exc.orig, "__cause__", None)):
+        name = getattr(candidate, "constraint_name", None)
+        if isinstance(name, str):
+            return name
+    return None
+
+
+async def _require_permission(
+    session: AsyncSession,
+    *,
+    profile_id: UUID,
+    application_id: UUID,
+    permission_name: str,
+) -> None:
+    if not await has_application_permission(
+        session,
+        profile_id=profile_id,
+        application_id=application_id,
+        permission_name=permission_name,
+    ):
+        raise ApplicationAccessDeniedError("Application access denied")
+
+
+async def _get_bound_key(
+    session: AsyncSession,
+    *,
+    api_key_id: UUID,
+    for_update: bool,
+) -> ApiKey:
+    api_key = await get_api_key_by_id(session, api_key_id=api_key_id, for_update=for_update)
+    if api_key is None or api_key.service_id is None:
+        raise ApiKeyNotFoundError("API key not found")
+    return api_key
+
+
+async def _lock_application(
+    session: AsyncSession, *, application_id: UUID
+) -> MonitoredService | None:
+    """Serialize key mutations with membership changes for one application."""
+
+    application: MonitoredService | None = await session.scalar(
+        select(MonitoredService).where(MonitoredService.id == application_id).with_for_update()
+    )
+    return application
+
+
+async def _get_bound_key_for_mutation(session: AsyncSession, *, api_key_id: UUID) -> ApiKey:
+    """Acquire application then key locks before mutation authorization."""
+
+    candidate = await _get_bound_key(session, api_key_id=api_key_id, for_update=False)
+    assert candidate.service_id is not None
+    if await _lock_application(session, application_id=candidate.service_id) is None:
+        raise ApiKeyNotFoundError("API key not found")
+    return await _get_bound_key(session, api_key_id=api_key_id, for_update=True)
 
 
 async def issue_api_key(
@@ -32,60 +101,61 @@ async def issue_api_key(
     profile_id: UUID,
     payload: ApiKeyCreate,
 ) -> tuple[ApiKey, SecretStr]:
-    """Generate and persist a one-time machine key atomically."""
+    """Issue a service-bound key and retain the human creator as metadata."""
 
     generated = generate_api_key()
     token = generated.token.get_secret_value()
     try:
         async with session.begin():
-            if payload.service_id is not None:
-                service = await get_monitored_service_by_id(
-                    session,
-                    profile_id=profile_id,
-                    service_id=payload.service_id,
-                )
-                if service is None:
-                    raise ApiKeyNotFoundError("Service not found")
+            application = await _lock_application(session, application_id=payload.service_id)
+            if application is None:
+                raise ApplicationNotFoundError("Application not found")
+            await _require_permission(
+                session,
+                profile_id=profile_id,
+                application_id=application.id,
+                permission_name="api_keys.manage",
+            )
             api_key = await create_api_key(
                 session,
                 profile_id=profile_id,
                 name=payload.name,
                 public_prefix=generated.public_prefix,
                 secret_digest=digest_api_key(token),
-                service_id=payload.service_id,
+                service_id=application.id,
                 expires_at=payload.expires_at,
             )
     except IntegrityError as exc:
+        if _integrity_constraint_name(exc) != "uq_api_key_service_name":
+            raise
         raise ApiKeyConflictError("API key name already exists") from exc
     return api_key, generated.token
 
 
-async def list_profile_api_keys(
-    session: AsyncSession,
-    *,
-    profile_id: UUID,
-) -> list[ApiKey]:
-    """List a profile's non-secret key metadata."""
+async def list_profile_api_keys(session: AsyncSession, *, profile_id: UUID) -> list[ApiKey]:
+    """List service-bound keys in applications the actor may read."""
 
     async with session.begin():
-        return await list_api_keys(session, profile_id=profile_id)
+        return await list_authorized_api_keys(
+            session, profile_id=profile_id, permission_name="api_keys.read"
+        )
 
 
 async def get_profile_api_key(
-    session: AsyncSession,
-    *,
-    profile_id: UUID,
-    api_key_id: UUID,
+    session: AsyncSession, *, profile_id: UUID, api_key_id: UUID
 ) -> ApiKey:
-    """Read one key without revealing cross-tenant IDs."""
+    """Read one key after a PostgreSQL-backed application permission check."""
 
     async with session.begin():
-        api_key = await get_api_key_by_id(
-            session, profile_id=profile_id, api_key_id=api_key_id
+        api_key = await _get_bound_key(session, api_key_id=api_key_id, for_update=False)
+        assert api_key.service_id is not None
+        await _require_permission(
+            session,
+            profile_id=profile_id,
+            application_id=api_key.service_id,
+            permission_name="api_keys.read",
         )
-    if api_key is None:
-        raise ApiKeyNotFoundError("API key not found")
-    return api_key
+        return api_key
 
 
 async def update_profile_api_key(
@@ -95,48 +165,48 @@ async def update_profile_api_key(
     api_key_id: UUID,
     payload: ApiKeyUpdate,
 ) -> ApiKey:
-    """Update safe metadata without rotating or exposing the key secret."""
+    """Lock, authorize, and update safe metadata in one transaction."""
 
     try:
         async with session.begin():
-            api_key = await get_api_key_by_id(
-                session, profile_id=profile_id, api_key_id=api_key_id
+            api_key = await _get_bound_key_for_mutation(session, api_key_id=api_key_id)
+            assert api_key.service_id is not None
+            await _require_permission(
+                session,
+                profile_id=profile_id,
+                application_id=api_key.service_id,
+                permission_name="api_keys.manage",
             )
-            if api_key is None:
-                raise ApiKeyNotFoundError("API key not found")
             fields = payload.model_dump(exclude_unset=True)
             if "expires_at" in fields:
                 requested_expiry = fields["expires_at"]
                 if requested_expiry is None or (
-                    api_key.expires_at is not None
-                    and requested_expiry > api_key.expires_at
+                    api_key.expires_at is not None and requested_expiry > api_key.expires_at
                 ):
-                    raise ApiKeyConflictError(
-                        "API key expiry cannot be extended or removed"
-                    )
+                    raise ApiKeyConflictError("API key expiry cannot be extended or removed")
             for field, value in fields.items():
                 setattr(api_key, field, value)
             await session.flush()
             await session.refresh(api_key)
             return api_key
     except IntegrityError as exc:
+        if _integrity_constraint_name(exc) != "uq_api_key_service_name":
+            raise
         raise ApiKeyConflictError("API key name already exists") from exc
 
 
-async def revoke_api_key(
-    session: AsyncSession,
-    *,
-    profile_id: UUID,
-    api_key_id: UUID,
-) -> None:
-    """Soft-revoke a key immediately and idempotently."""
+async def revoke_api_key(session: AsyncSession, *, profile_id: UUID, api_key_id: UUID) -> None:
+    """Lock, authorize, and soft-revoke a key immediately and idempotently."""
 
     async with session.begin():
-        api_key = await get_api_key_by_id(
-            session, profile_id=profile_id, api_key_id=api_key_id
+        api_key = await _get_bound_key_for_mutation(session, api_key_id=api_key_id)
+        assert api_key.service_id is not None
+        await _require_permission(
+            session,
+            profile_id=profile_id,
+            application_id=api_key.service_id,
+            permission_name="api_keys.manage",
         )
-        if api_key is None:
-            raise ApiKeyNotFoundError("API key not found")
         if api_key.revoked_at is None:
             api_key.revoked_at = datetime.now(UTC)
             await session.flush()

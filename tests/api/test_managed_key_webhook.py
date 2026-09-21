@@ -21,6 +21,8 @@ from watchtower.models.event import Event
 from watchtower.models.monitored_service import MonitoredService
 from watchtower.models.outbox_message import OutboxMessage
 from watchtower.models.profile import Profile
+from watchtower.models.profile_role import ProfileRole
+from watchtower.models.webhook_rate_limit import WebhookRateLimit
 from watchtower.schemas.auth import AuthenticatedUser
 
 DATABASE_URL = os.environ.get(
@@ -37,7 +39,9 @@ class WebhookUserAuthClient:
 
 
 @asynccontextmanager
-async def managed_webhook_client() -> AsyncIterator[tuple[AsyncClient, async_sessionmaker[AsyncSession]]]:
+async def managed_webhook_client() -> AsyncIterator[
+    tuple[AsyncClient, async_sessionmaker[AsyncSession]]
+]:
     app = create_app(
         Settings(
             environment="test",
@@ -65,6 +69,21 @@ async def managed_webhook_client() -> AsyncIterator[tuple[AsyncClient, async_ses
                             ).all()
                         )
                         if profile_ids:
+                            api_key_ids = list(
+                                (
+                                    await session.scalars(
+                                        select(ApiKey.id).where(ApiKey.profile_id.in_(profile_ids))
+                                    )
+                                ).all()
+                            )
+                            if api_key_ids:
+                                await session.execute(
+                                    delete(WebhookRateLimit).where(
+                                        WebhookRateLimit.identity.in_(
+                                            [f"managed:{api_key_id}" for api_key_id in api_key_ids]
+                                        )
+                                    )
+                                )
                             await session.execute(
                                 delete(OutboxMessage).where(
                                     OutboxMessage.profile_id.in_(profile_ids)
@@ -75,6 +94,9 @@ async def managed_webhook_client() -> AsyncIterator[tuple[AsyncClient, async_ses
                             )
                             await session.execute(
                                 delete(ApiKey).where(ApiKey.profile_id.in_(profile_ids))
+                            )
+                            await session.execute(
+                                delete(ProfileRole).where(ProfileRole.profile_id.in_(profile_ids))
                             )
                             await session.execute(
                                 delete(MonitoredService).where(
@@ -112,7 +134,7 @@ async def create_service_and_key(
     user_token: str,
     slug: str,
     key_name: str,
-    bind_service: bool = False,
+    bind_service: bool = True,
 ) -> tuple[dict[str, object], str]:
     service = await client.post(
         "/api/v1/services",
@@ -153,24 +175,79 @@ async def test_managed_key_attributes_event_and_outbox_to_profile() -> None:
             },
         )
         assert accepted.status_code == status.HTTP_202_ACCEPTED
-        listed_keys = await client.get(
-            "/api/v1/api-keys", headers=user_auth("user-token-a")
-        )
+        listed_keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
         async with factory() as session:
             event = await session.scalar(
                 select(Event).where(Event.id == UUID(accepted.json()["event_id"]))
             )
+            assert event is not None
             outbox = await session.scalar(
                 select(OutboxMessage).where(OutboxMessage.event_id == event.id)
             )
 
     assert accepted.status_code == status.HTTP_202_ACCEPTED
     assert listed_keys.json()[0]["last_used_at"] is not None
-    assert event is not None
     assert outbox is not None
     assert event.profile_id == outbox.profile_id
-    assert event.service_id == UUID(service["id"])
+    assert event.service_id == UUID(str(service["id"]))
     assert outbox.payload["profile_id"] == str(event.profile_id)
+
+
+@pytest.mark.integration
+async def test_cross_profile_app_admin_key_uses_service_owner_as_machine_tenant() -> None:
+    slug = f"cross-owner-{uuid4().hex}"
+    async with managed_webhook_client() as (client, factory):
+        service = await client.post(
+            "/api/v1/services",
+            json={"slug": slug, "display_name": slug, "environment": "test"},
+            headers=user_auth("user-token-a"),
+        )
+        assert service.status_code == status.HTTP_201_CREATED
+        await client.get("/api/v1/services", headers=user_auth("user-token-b"))
+        async with factory() as session:
+            owner_profile_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USER_A.id)
+            )
+            creator_profile_id = await session.scalar(
+                select(Profile.id).where(Profile.auth_user_id == USER_B.id)
+            )
+        assert owner_profile_id is not None
+        assert creator_profile_id is not None
+
+        membership = await client.put(
+            f"/api/v1/services/{service.json()['id']}/memberships/{creator_profile_id}",
+            json={"role": "app_admin"},
+            headers=user_auth("user-token-a"),
+        )
+        assert membership.status_code == status.HTTP_200_OK
+        key = await client.post(
+            "/api/v1/api-keys",
+            json={"name": "cross-owner-key", "service_id": service.json()["id"]},
+            headers=user_auth("user-token-b"),
+        )
+        assert key.status_code == status.HTTP_201_CREATED
+        key_id = UUID(key.json()["id"])
+
+        accepted = await client.post(
+            "/api/v1/webhooks/events",
+            content=event_body(slug),
+            headers={
+                "Content-Type": "application/json",
+                "X-Watchtower-Service": slug,
+                "X-Watchtower-API-Key": key.json()["api_key"],
+            },
+        )
+        assert accepted.status_code == status.HTTP_202_ACCEPTED
+        async with factory() as session:
+            event = await session.get(Event, UUID(accepted.json()["event_id"]))
+            persisted_key = await session.get(ApiKey, key_id)
+
+    assert event is not None
+    assert persisted_key is not None
+    assert persisted_key.profile_id == creator_profile_id
+    assert event.profile_id == owner_profile_id
+    assert event.profile_id != creator_profile_id
+    assert event.service_id == UUID(service.json()["id"])
 
 
 @pytest.mark.integration
@@ -223,9 +300,7 @@ async def test_failed_body_validation_does_not_mark_key_used() -> None:
                 "X-Watchtower-API-Key": api_key,
             },
         )
-        keys = await client.get(
-            "/api/v1/api-keys", headers=user_auth("user-token-a")
-        )
+        keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
     assert keys.json()[0]["last_used_at"] is None
@@ -282,9 +357,7 @@ async def test_revoked_key_is_rejected_and_service_binding_is_enforced() -> None
         )
         keys = await client.get("/api/v1/api-keys", headers=user_auth("user-token-a"))
         key_id = next(item["id"] for item in keys.json() if item["service_id"] == service["id"])
-        await client.delete(
-            f"/api/v1/api-keys/{key_id}", headers=user_auth("user-token-a")
-        )
+        await client.delete(f"/api/v1/api-keys/{key_id}", headers=user_auth("user-token-a"))
         revoked = await client.post(
             "/api/v1/webhooks/events",
             content=event_body(slug),

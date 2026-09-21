@@ -8,8 +8,8 @@ from starlette import status
 
 from watchtower.api.v1.dependencies.csrf import require_browser_origin
 from watchtower.api.v1.dependencies.user_auth import (
-    AuthenticatedRequest,
-    get_authenticated_request,
+    CurrentProfile,
+    get_current_profile,
     get_session_token,
 )
 from watchtower.clients.auth_service import (
@@ -21,7 +21,10 @@ from watchtower.clients.auth_service import (
 )
 from watchtower.db.dependencies import get_db_session
 from watchtower.schemas.auth import CurrentUserResponse, LoginRequest
-from watchtower.services.profiles import provision_profile_for_user
+from watchtower.services.profiles import (
+    ProfileAccessDeniedError,
+    provision_profile_for_user,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -31,10 +34,15 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         401: {"description": "Invalid credentials"},
+        403: {"description": "Profile access denied"},
         503: {"description": "Auth unavailable"},
     },
 )
-async def login(payload: LoginRequest, request: Request) -> Response:
+async def login(
+    payload: LoginRequest,
+    request: Request,
+    db_session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> Response:
     """Create a browser session using the external auth service."""
 
     client = cast(AuthServiceClient, request.app.state.auth_client)
@@ -67,6 +75,23 @@ async def login(payload: LoginRequest, request: Request) -> Response:
             detail="Authentication service returned an invalid response",
         ) from exc
 
+    try:
+        await provision_profile_for_user(db_session, session.user)
+    except ProfileAccessDeniedError as exc:
+        try:
+            await client.logout(session.token.get_secret_value())
+        except (
+            AuthServiceUnauthorized,
+            AuthServiceRateLimited,
+            AuthServiceUnavailable,
+            AuthServiceProtocolError,
+        ):
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Profile access denied",
+        ) from exc
+
     settings = request.app.state.settings
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     response.set_cookie(
@@ -86,22 +111,21 @@ async def login(payload: LoginRequest, request: Request) -> Response:
     response_model=CurrentUserResponse,
     responses={
         401: {"description": "Authentication required"},
+        403: {"description": "Profile access denied"},
         503: {"description": "Auth unavailable"},
     },
 )
 async def current_user(
-    authenticated: Annotated[AuthenticatedRequest, Depends(get_authenticated_request)],
-    session: Annotated[AsyncSession, Depends(get_db_session)],
+    current: Annotated[CurrentProfile, Depends(get_current_profile)],
 ) -> CurrentUserResponse:
-    """Return the live external identity and lazily provision its profile."""
+    """Return the live external identity and its active local profile."""
 
-    profile = await provision_profile_for_user(session, authenticated.user)
     return CurrentUserResponse(
-        id=authenticated.user.id,
-        username=authenticated.user.username,
-        is_admin=authenticated.user.is_admin,
-        profile_id=profile.id,
-        display_name=profile.display_name,
+        id=current.authenticated.user.id,
+        username=current.authenticated.user.username,
+        is_admin=current.authenticated.user.is_admin,
+        profile_id=current.profile.id,
+        display_name=current.profile.display_name,
     )
 
 

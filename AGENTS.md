@@ -29,12 +29,12 @@ Before staging or committing, inspect `git status`, preserve any existing index 
 - Scope now: FastAPI backend plus the `watchtowersHouse` JavaScript React operator frontend
 - Primary language/frameworks: Python + FastAPI; JavaScript + React + Vite
 - Primary datastore: PostgreSQL
-- Architecture direction: same-origin tenant-aware control plane with external identity, profile-owned resources, Kafka-compatible topics, and a transactional outbox boundary
+- Architecture direction: tenant-aware control plane with a production Node static server serving the built Vite frontend and forwarding browser `/api/*` traffic to FastAPI, external identity, profile-owned resources, Kafka-compatible topics, and a transactional outbox boundary
 - Explicitly out of scope for this milestone: alert delivery, broad analytics, Kubernetes, and multi-region deployment
 
 ## Product intent
 
-The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations through the same Nginx origin as the API. The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
+The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations through the frontend static server's same-origin `/api/*` forwarding. **`MonitoredService` is currently the deployed application/source identity used by events, API keys, and application-scoped role memberships; do not introduce a duplicate `applications` table or migrate ingestion references unless a later approved slice explicitly changes that boundary.** The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
 
 The active tenant milestone extends the shipped vertical slice through this path:
 
@@ -94,25 +94,26 @@ The committed `dev` branch includes:
   - `0003_event_outbox`: creates immutable JSONB events and Kafka-ready transactional outbox rows.
   - `0004_outbox_integrity`: enforces event/service identity consistency for every outbox row.
 - Authenticated `POST /api/v1/webhooks/events` using per-service HMAC-SHA256, signed timestamps, constant-time comparison, source binding, and a 256 KiB default body limit.
-- Webhook abuse controls at both boundaries: per-service application budgets and per-IP Nginx edge limits.
+- Webhook abuse controls use shared PostgreSQL fixed-window application budgets keyed by authenticated managed-key UUID or mapped legacy profile/source identity. Per-identity transaction advisory locks make rollover timing safe across replicas; indexed inactive rows older than 24 hours are batch-pruned under nonblocking per-identity advisory locks during later consumption.
 - Idempotency by monitored service plus source event UUID; duplicate retries return the original canonical event and create no additional outbox row.
 - Service-owned event/outbox transactions; repositories never commit.
-- Host port `8010` terminates at the non-root Nginx proxy; FastAPI and PostgreSQL are not published to the host.
+- The frontend is published on host port `5174`; FastAPI and PostgreSQL are published only on host loopback ports `8001` and `5433`, and remote API clients require a trusted TLS ingress. The frontend proxy enforces the configured global request-body limit.
 
 The committed tenant/auth/frontend milestone adds:
 
 - Typed, fail-closed external-auth client and browser login/logout/current-user routes.
 - One local profile per stable external identity UUID, provisioned idempotently.
+- PostgreSQL-enforced `active`/`suspended` profile access state and database-timed `last_authenticated_at`; successful DAuth validation never reactivates a suspended profile.
 - Profile ownership for monitored services, events, outbox rows, and API keys, enforced in repository predicates and PostgreSQL constraints.
 - Authenticated profile-scoped service and API-key management routes; cross-profile probes behave as not found.
 - Digest-only, one-time-disclosed managed API keys using versioned high-entropy tokens, a non-secret lookup prefix, domain-separated SHA-256 verification, constant-time comparison, optional immutable service binding, expiry, and irreversible soft revocation.
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, and `0008_security_hardening`.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, `0014_watchtower_permissions`, and `0015_api_key_application_rbac`.
 - A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
 - The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
-- Same-origin Nginx routing where `/api/*` reaches FastAPI and browser routes reach the frontend, with exact trusted-origin configuration for cookie-authenticated mutations.
+- Same-origin frontend-server forwarding where browser `/api/*` requests reach FastAPI over the Compose network; both the production server and Vite development server allow `dwatchtower.johnmgrubbs.io`, and `https://dwatchtower.johnmgrubbs.io` is trusted for cookie-authenticated mutations.
 
 Do not describe the active monitored-services extension as shipped until full tests, Ruff, strict mypy, dependency checks, Compose validation, runtime smoke tests, secret scans, and exact-diff reviews all pass and the implementation is committed and pushed to `dev`.
 
@@ -123,7 +124,7 @@ Exact development commands, run from `/home/lowery/the-watchtower` on `vm-work-d
 ```bash
 docker compose config -q
 docker compose --profile test build
-docker compose up -d db proxy
+docker compose up -d --build db api frontend
 docker compose run --rm test pytest -v
 docker compose run --rm test ruff check src tests alembic
 docker compose run --rm test mypy src tests
@@ -153,9 +154,6 @@ Maintain this structure unless the approved plan changes it:
 ├── pyproject.toml
 ├── Dockerfile
 ├── compose.yaml
-├── deploy/
-│   └── nginx/
-│       └── default.conf
 ├── .env.example
 ├── alembic.ini
 ├── alembic/
@@ -296,6 +294,8 @@ POST /api/v1/auth/logout
 GET  /api/v1/auth/me
 POST/GET /api/v1/services
 GET/PATCH/DELETE /api/v1/services/{service_id}
+GET /api/v1/services/{service_id}/memberships
+PUT/DELETE /api/v1/services/{service_id}/memberships/{profile_id}
 POST/GET /api/v1/api-keys
 GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 ```
@@ -310,9 +310,13 @@ Use PostgreSQL schema `watchtower`.
 
 Purpose: durable local tenant root keyed by the external auth service's stable subject UUID. Profile deletion is explicit and child-first; tenant roots use restrictive foreign keys rather than accidental cascades.
 
+### `role`, `permission`, `role_permission`, and `profile_role`
+
+Purpose: durable normalized human authorization metadata. PostgreSQL is the source of truth. The permission catalog is closed to `profiles.read`, `profiles.manage`, `applications.read`, `applications.manage`, `memberships.manage`, `api_keys.read`, `api_keys.manage`, and `events.read`; deterministic UUID seeds and restrictive foreign keys make role grants stable and explicit. `watchtower_admin` receives every permission, `app_admin` receives application/key management, membership management, and event read access, and `viewer` receives application/event read access. Monitored-service/application list and read operations resolve `applications.read` from these tables, while update and activation operations resolve `applications.manage`; global administrators apply across applications and scoped roles apply only to their assigned application. Membership APIs resolve `memberships.manage` in PostgreSQL and may assign only application-scoped `app_admin` or `viewer`. PUT normalizes a target to exactly one role, preserves an unchanged assignment, and otherwise derives a UUIDv5 with namespace `fe2ed8dc-d070-5687-9b68-51356c0fe51f` from `{application_id}:{profile_id}:{role}`; mutations lock the monitored-service row and retain at least one local `app_admin`, regardless of global admins. Any active profile may create an application, and creation atomically grants that creator `app_admin` in the same PostgreSQL transaction. Human management permissions are intentionally separate from machine API-key ingestion scopes; neither credential class substitutes for the other.
+
 ### `api_key`
 
-Purpose: profile-owned machine credential metadata. Persist only key version, non-secret lookup prefix, fixed-length digest, immutable optional service binding, scopes, expiry/revocation/use timestamps, and audit metadata. Never persist or log the raw token.
+Purpose: application-bound machine credential metadata with durable human creator history. Persist only key version, non-secret lookup prefix, fixed-length digest, required service binding for new keys, scopes, expiry/revocation/use timestamps, and audit metadata. `profile_id` identifies the human creator and restricts profile deletion; `service_id` is the authoritative machine source and tenant binding. PostgreSQL `api_keys.read` and `api_keys.manage` grants control human metadata access; key mutations and managed ingestion lock the application before authorization or any key-row lock so concurrent membership changes and revocation cannot race authorization or deadlock. Ingestion derives the service owner and slug from the key's database-bound service rather than the creator or request header. Revoked unbound legacy rows remain durable but cannot authenticate or appear in application-scoped lists. Never persist or log the raw token.
 
 ### `monitored_service`
 
@@ -374,7 +378,7 @@ Do not add active polling/scheduling until the owner answers whether Watchtower 
 - Fail closed on external-auth timeouts, outages, malformed payloads, and protocol drift. Preserve generic non-enumerating authentication responses.
 - Revalidate managed-key revocation, expiry, profile, and service binding while holding the ingestion transaction's row lock.
 - Legacy HMAC requires timestamp freshness, constant-time signature comparison, and explicit service-to-profile mapping.
-- Apply request size and rate limits at both proxy and application boundaries.
+- Enforce request size and shared rate limits in the application; production ingress may add independent network-level controls.
 - Database role should have only required schema privileges.
 - Retention and deletion policies are unresolved and must be approved before production use.
 
@@ -386,7 +390,7 @@ Do not add active polling/scheduling until the owner answers whether Watchtower 
 - Contract tests: exact event-envelope and Kafka-message shapes.
 - Worker tests: publish acknowledgement, retry scheduling, duplicate execution.
 - Health tests: liveness independent of dependencies; readiness reflects required dependencies.
-- Frontend tests: login success/failure, protected navigation, profile-aware Home data, API-key loading/empty/error states, one-time disclosure, safe metadata updates, and revocation. Run Vitest, ESLint, Vite build, and `npm audit` in the profile-gated `frontend-tools` container; the runtime image serves only the built static bundle.
+- Frontend tests: login success/failure, protected navigation, profile-aware Home data, API-key loading/empty/error states, one-time disclosure, safe metadata updates, and revocation. Run Vitest, ESLint, Vite build, and `npm audit` in the profile-gated `frontend-tools` container; the runtime image serves only the built Vite bundle through the non-root Node static server on internal port `5173`.
 
 Use real PostgreSQL for persistence integration tests; SQLite is not an acceptable substitute for PostgreSQL `JSONB`, schemas, constraints, or async behavior.
 
@@ -399,7 +403,7 @@ Use real PostgreSQL for persistence integration tests; SQLite is not an acceptab
 - Managed-key state is revalidated in the same transaction as event/outbox persistence, and failed ingestion does not update `last_used_at`.
 - Legacy HMAC works only for explicitly profile-mapped service identities.
 - Operators can sign in through the React frontend, view profile-aware Home metrics, and list, issue, rename, copy once, and revoke profile-owned API keys without exposing session or key material to persistent browser storage.
-- Nginx serves frontend routes and proxies `/api/*` through one configured trusted origin; anonymous protected routes return to Login.
+- The production frontend server serves built routes and forwards `/api/*` through one configured trusted origin; anonymous protected routes return to Login.
 - Valid events and outbox rows remain atomic and duplicate retries remain deterministic.
 - Alembic upgrades a fresh PostgreSQL database through the full migration head; authorized disposable downgrade/upgrade cycles preserve migration integrity.
 - Full backend and frontend tests, Ruff check/format, strict mypy, ESLint, Vite build, `pip check`, `npm audit`, Compose validation, migration parity, runtime smoke, tenant isolation, and secret scans pass.

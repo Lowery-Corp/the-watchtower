@@ -2,6 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -22,8 +23,7 @@ def make_request(
     headers: dict[str, str] | None = None,
 ) -> Request:
     raw_headers = [
-        (name.lower().encode(), value.encode())
-        for name, value in (headers or {}).items()
+        (name.lower().encode(), value.encode()) for name, value in (headers or {}).items()
     ]
     scope: dict[str, Any] = {
         "type": "http",
@@ -53,7 +53,7 @@ async def test_missing_headers_return_unauthorized_without_consuming_body() -> N
     request = make_request(receive, Settings())
 
     with pytest.raises(HTTPException) as error:
-        await webhook_auth.authenticate_webhook(request)
+        await webhook_auth.authenticate_webhook(request, session=AsyncMock())
 
     assert error.value.status_code == 401
     assert calls == 0
@@ -82,7 +82,7 @@ async def test_stale_headers_are_rejected_before_body_is_consumed() -> None:
     )
 
     with pytest.raises(HTTPException) as error:
-        await webhook_auth.authenticate_webhook(request)
+        await webhook_auth.authenticate_webhook(request, session=AsyncMock())
 
     assert error.value.status_code == 401
     assert calls == 0
