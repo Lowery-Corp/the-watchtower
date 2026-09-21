@@ -4,7 +4,7 @@ __pycache__/
 *$py.class
 
 .hermes/*
-.github/*
+.hermes2/*
 # C extensions
 *.so
 
