@@ -219,6 +219,7 @@ async def test_simultaneous_first_profile_key_issue_creates_then_reissues_single
     try:
         async with profile_fixture(factory) as profile_id:
             tasks: list[asyncio.Task[tuple[ApiKey, SecretStr, bool]]] = []
+            observer_tasks: list[asyncio.Task[tuple[int, ...]]] = []
             try:
                 async with engine.connect() as lock_connection:
                     locker_pid = await _backend_pid(lock_connection)
@@ -245,14 +246,15 @@ async def test_simultaneous_first_profile_key_issue_creates_then_reissues_single
                         asyncio.wait_for(first_pid, timeout=5),
                         asyncio.wait_for(second_pid, timeout=5),
                     )
-                    blocking_chains = await asyncio.gather(
-                        *(
+                    observer_tasks = [
+                        asyncio.create_task(
                             _wait_for_expected_blocker(
                                 factory, blocked_pid=pid, blocker_pid=None
                             )
-                            for pid in issue_pids
                         )
-                    )
+                        for pid in issue_pids
+                    ]
+                    blocking_chains = await asyncio.gather(*observer_tasks)
                     assert locker_pid in {pid for chain in blocking_chains for pid in chain}
                     await lock_connection.commit()
 
@@ -286,8 +288,13 @@ async def test_simultaneous_first_profile_key_issue_creates_then_reissues_single
                 for task in tasks:
                     if not task.done():
                         task.cancel()
+                for observer_task in observer_tasks:
+                    if not observer_task.done():
+                        observer_task.cancel()
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
+                if observer_tasks:
+                    await asyncio.gather(*observer_tasks, return_exceptions=True)
     finally:
         await engine.dispose()
 
