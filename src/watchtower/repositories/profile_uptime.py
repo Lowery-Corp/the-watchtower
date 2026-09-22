@@ -26,7 +26,11 @@ class ServiceUptimeView:
 
 
 async def list_profile_uptime(
-    session: AsyncSession, *, profile_id: UUID, window_start: datetime
+    session: AsyncSession,
+    *,
+    profile_id: UUID,
+    window_start: datetime,
+    window_end: datetime,
 ) -> list[ServiceUptimeView]:
     """Return every readable service with active monitors and 24-hour rollups."""
 
@@ -50,6 +54,7 @@ async def list_profile_uptime(
                 and_(
                     WebsiteMonitorCheck.monitor_id == WebsiteMonitor.id,
                     WebsiteMonitorCheck.checked_at >= window_start,
+                    WebsiteMonitorCheck.checked_at <= window_end,
                 ),
             )
             .where(

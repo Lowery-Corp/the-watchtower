@@ -73,6 +73,7 @@ async def _require_permission(
 async def _get_bound_key(
     session: AsyncSession,
     *,
+    profile_id: UUID,
     api_key_id: UUID,
     for_update: bool,
 ) -> ApiKey:
@@ -80,7 +81,9 @@ async def _get_bound_key(
     if api_key is None:
         raise ApiKeyNotFoundError("API key not found")
     if api_key.credential_kind == "profile_uptime":
-        raise ApiKeyConflictError("Profile uptime keys can only be reissued")
+        if api_key.profile_id != profile_id:
+            raise ApiKeyNotFoundError("API key not found")
+        return api_key
     if api_key.service_id is None:
         raise ApiKeyNotFoundError("API key not found")
     return api_key
@@ -97,14 +100,22 @@ async def _lock_application(
     return application
 
 
-async def _get_bound_key_for_mutation(session: AsyncSession, *, api_key_id: UUID) -> ApiKey:
+async def _get_bound_key_for_mutation(
+    session: AsyncSession, *, profile_id: UUID, api_key_id: UUID
+) -> ApiKey:
     """Acquire application then key locks before mutation authorization."""
 
-    candidate = await _get_bound_key(session, api_key_id=api_key_id, for_update=False)
+    candidate = await _get_bound_key(
+        session, profile_id=profile_id, api_key_id=api_key_id, for_update=False
+    )
+    if candidate.credential_kind == "profile_uptime":
+        raise ApiKeyConflictError("Profile uptime keys can only be reissued")
     assert candidate.service_id is not None
     if await _lock_application(session, application_id=candidate.service_id) is None:
         raise ApiKeyNotFoundError("API key not found")
-    return await _get_bound_key(session, api_key_id=api_key_id, for_update=True)
+    return await _get_bound_key(
+        session, profile_id=profile_id, api_key_id=api_key_id, for_update=True
+    )
 
 
 async def issue_api_key(
@@ -203,7 +214,11 @@ async def get_profile_api_key(
     """Read one key after a PostgreSQL-backed application permission check."""
 
     async with session.begin():
-        api_key = await _get_bound_key(session, api_key_id=api_key_id, for_update=False)
+        api_key = await _get_bound_key(
+            session, profile_id=profile_id, api_key_id=api_key_id, for_update=False
+        )
+        if api_key.credential_kind == "profile_uptime":
+            return api_key
         assert api_key.service_id is not None
         await _require_permission(
             session,
@@ -225,7 +240,9 @@ async def update_profile_api_key(
 
     try:
         async with session.begin():
-            api_key = await _get_bound_key_for_mutation(session, api_key_id=api_key_id)
+            api_key = await _get_bound_key_for_mutation(
+                session, profile_id=profile_id, api_key_id=api_key_id
+            )
             assert api_key.service_id is not None
             await _require_permission(
                 session,
@@ -255,7 +272,9 @@ async def revoke_api_key(session: AsyncSession, *, profile_id: UUID, api_key_id:
     """Lock, authorize, and soft-revoke a key immediately and idempotently."""
 
     async with session.begin():
-        api_key = await _get_bound_key_for_mutation(session, api_key_id=api_key_id)
+        api_key = await _get_bound_key_for_mutation(
+            session, profile_id=profile_id, api_key_id=api_key_id
+        )
         assert api_key.service_id is not None
         await _require_permission(
             session,

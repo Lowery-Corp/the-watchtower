@@ -113,6 +113,54 @@ async def test_profile_uptime_key_issue_reissue_and_listing_contract() -> None:
 
 
 @pytest.mark.integration
+async def test_profile_uptime_key_management_is_owner_only_for_every_item_method() -> None:
+    async with key_client() as (client, _):
+        created = await client.post(
+            "/api/v1/api-keys",
+            json={"credential_kind": "profile_uptime"},
+            headers=auth("token-a"),
+        )
+        key_id = created.json()["id"]
+
+        owner_get = await client.get(
+            f"/api/v1/api-keys/{key_id}", headers=auth("token-a")
+        )
+        owner_patch = await client.patch(
+            f"/api/v1/api-keys/{key_id}",
+            json={"name": "not permitted"},
+            headers=auth("token-a"),
+        )
+        owner_delete = await client.delete(
+            f"/api/v1/api-keys/{key_id}", headers=auth("token-a")
+        )
+        foreign_get = await client.get(
+            f"/api/v1/api-keys/{key_id}", headers=auth("token-b")
+        )
+        foreign_patch = await client.patch(
+            f"/api/v1/api-keys/{key_id}",
+            json={"name": "not permitted"},
+            headers=auth("token-b"),
+        )
+        foreign_delete = await client.delete(
+            f"/api/v1/api-keys/{key_id}", headers=auth("token-b")
+        )
+
+    assert created.status_code == status.HTTP_201_CREATED
+    assert owner_get.status_code == status.HTTP_200_OK
+    assert owner_get.json()["id"] == key_id
+    assert owner_get.json()["credential_kind"] == "profile_uptime"
+    assert "api_key" not in owner_get.json()
+    for response in (owner_patch, owner_delete):
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.json() == {
+            "detail": "Profile uptime keys can only be reissued"
+        }
+    for response in (foreign_get, foreign_patch, foreign_delete):
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.json() == {"detail": "API key not found"}
+
+
+@pytest.mark.integration
 async def test_key_plaintext_is_returned_once_and_digest_only_is_persisted() -> None:
     async with key_client() as (client, factory):
         service = await client.post(

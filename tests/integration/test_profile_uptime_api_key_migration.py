@@ -359,6 +359,79 @@ async def test_0017_rejects_invalid_kind_binding_and_scope_combinations(
 
 
 @pytest.mark.integration
+async def test_0017_downgrade_locks_before_profile_key_preflight(
+    profile_uptime_migration_database: ProfileUptimeMigrationDatabase,
+) -> None:
+    fixture = profile_uptime_migration_database
+    uptime_key_id = uuid4()
+    engine = create_async_engine(fixture.url)
+    process: asyncio.subprocess.Process | None = None
+    try:
+        async with engine.connect() as blocker:
+            transaction = await blocker.begin()
+            await blocker.execute(
+                text("LOCK TABLE watchtower.api_key IN ROW EXCLUSIVE MODE")
+            )
+            process = await asyncio.create_subprocess_exec(
+                "alembic",
+                "downgrade",
+                PARENT_REVISION,
+                env={**os.environ, "WATCHTOWER_DATABASE_URL": fixture.url},
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            async with engine.connect() as observer:
+                for _ in range(100):
+                    lock_is_waiting = await observer.scalar(
+                        text(
+                            "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                            "WHERE relation = 'watchtower.api_key'::regclass "
+                            "AND mode = 'AccessExclusiveLock' AND NOT granted)"
+                        )
+                    )
+                    if lock_is_waiting:
+                        break
+                    await asyncio.sleep(0.05)
+                assert lock_is_waiting, "downgrade never requested the exclusion lock"
+
+            await blocker.execute(
+                text(
+                    "INSERT INTO watchtower.api_key "
+                    "(id, profile_id, name, credential_kind, public_prefix, secret_digest, scopes) "
+                    "VALUES (:id, :profile_id, 'Racing profile uptime API', "
+                    "'profile_uptime', :prefix, :digest, CAST(:scopes AS jsonb))"
+                ),
+                {
+                    "id": uptime_key_id,
+                    "profile_id": fixture.profile_id,
+                    "prefix": "uptime-race-key",
+                    "digest": b"c" * 32,
+                    "scopes": '["uptime:read"]',
+                },
+            )
+            await transaction.commit()
+
+        assert process.stdout is not None
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+        rendered = output.decode()
+        assert process.returncode != 0, rendered
+        assert "Cannot downgrade while profile uptime API keys exist" in rendered
+
+        async with engine.connect() as connection:
+            await _assert_revision(connection, PROFILE_UPTIME_REVISION)
+            _assert_profile_uptime_schema(*await _catalog(connection))
+            assert await connection.scalar(
+                text("SELECT count(*) FROM watchtower.api_key WHERE id = :id"),
+                {"id": uptime_key_id},
+            ) == 1
+    finally:
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        await engine.dispose()
+
+
+@pytest.mark.integration
 async def test_0017_guarded_downgrade_rolls_back_then_cleanly_downgrades_and_reupgrades(
     profile_uptime_migration_database: ProfileUptimeMigrationDatabase,
 ) -> None:

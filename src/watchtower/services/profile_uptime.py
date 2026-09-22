@@ -111,6 +111,7 @@ async def read_profile_uptime(
             session,
             profile_id=profile.id,
             window_start=generated_at - timedelta(hours=24),
+            window_end=generated_at,
         )
         response = ProfileUptimeResponse(
             profile=ProfileUptimeIdentity(id=profile.id),

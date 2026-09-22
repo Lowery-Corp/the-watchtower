@@ -68,6 +68,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     connection = op.get_bind()
+    connection.execute(sa.text("LOCK TABLE watchtower.api_key IN ACCESS EXCLUSIVE MODE"))
     if connection.scalar(
         sa.text(
             "SELECT EXISTS (SELECT 1 FROM watchtower.api_key "

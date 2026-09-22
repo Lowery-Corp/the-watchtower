@@ -222,6 +222,13 @@ async def test_uptime_returns_all_and_only_readable_services_with_active_monitor
                             status_code=503,
                             response_time_ms=100,
                         ),
+                        WebsiteMonitorCheck(
+                            monitor_id=up.id,
+                            checked_at=now + timedelta(hours=1),
+                            is_up=True,
+                            status_code=200,
+                            response_time_ms=79,
+                        ),
                     ]
                 )
 
