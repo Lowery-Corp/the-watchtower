@@ -13,6 +13,8 @@ from sqlalchemy.engine import RowMapping, make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
+TARGET_REVISION = "0015_api_key_application_rbac"
+
 
 @dataclass(frozen=True)
 class SeededMigrationDatabase:
@@ -82,7 +84,7 @@ async def api_key_migration_database() -> AsyncIterator[SeededMigrationDatabase]
                 {"id": legacy_key_id, "profile_id": creator_id, "digest": b"l" * 32},
             )
         await engine.dispose()
-        await _run_alembic(database_url, "upgrade", "head")
+        await _run_alembic(database_url, "upgrade", TARGET_REVISION)
         yield SeededMigrationDatabase(database_url, owner_id, creator_id, service_id, legacy_key_id)
     finally:
         async with admin_engine.connect() as connection:
@@ -377,7 +379,7 @@ async def test_downgrade_rejects_cross_owner_then_reupgrades_without_losing_lega
     await engine.dispose()
 
     await _run_alembic(fixture.url, "downgrade", "0014_watchtower_permissions")
-    await _run_alembic(fixture.url, "upgrade", "head")
+    await _run_alembic(fixture.url, "upgrade", TARGET_REVISION)
     engine = create_async_engine(fixture.url)
     try:
         async with engine.connect() as connection:
@@ -448,7 +450,7 @@ async def test_downgrade_rejects_duplicate_creator_key_names(
     await engine.dispose()
 
     await _run_alembic(fixture.url, "downgrade", "0014_watchtower_permissions")
-    await _run_alembic(fixture.url, "upgrade", "head")
+    await _run_alembic(fixture.url, "upgrade", TARGET_REVISION)
     engine = create_async_engine(fixture.url)
     try:
         async with engine.connect() as connection:
