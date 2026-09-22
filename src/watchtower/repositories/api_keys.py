@@ -44,7 +44,7 @@ async def get_api_key_by_id(
 
     statement = select(ApiKey).where(ApiKey.id == api_key_id)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     return (await session.scalars(statement)).one_or_none()
 
 

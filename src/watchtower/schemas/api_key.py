@@ -3,7 +3,8 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class ApiKeyCreate(BaseModel):
@@ -13,14 +14,23 @@ class ApiKeyCreate(BaseModel):
 
     credential_kind: str = "service_ingestion"
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    service_id: UUID | None = None
+    service_id: UUID | None = Field(default=None, validate_default=True)
     expires_at: datetime | None = None
+
+    @field_validator("service_id")
+    @classmethod
+    def service_ingestion_requires_service(
+        cls, value: UUID | None, info: ValidationInfo
+    ) -> UUID | None:
+        if info.data.get("credential_kind") == "service_ingestion" and value is None:
+            raise PydanticCustomError("missing", "Field required")
+        return value
 
     @model_validator(mode="after")
     def validate_kind_fields(self) -> "ApiKeyCreate":
         if self.credential_kind == "service_ingestion":
-            if self.name is None or self.service_id is None:
-                raise ValueError("Service ingestion keys require name and service_id")
+            if self.name is None:
+                raise ValueError("Service ingestion keys require name")
         elif self.credential_kind == "profile_uptime":
             if any(value is not None for value in (self.name, self.service_id, self.expires_at)):
                 raise ValueError("Profile uptime key fields are managed by the server")
