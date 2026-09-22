@@ -4,7 +4,7 @@
 
 This file is the primary context handoff for AI coding agents working in this repository.
 
-**Current phase: the event-ingestion, profiles, external-auth, managed API-key, tenant-isolation, and React operator-frontend foundation is shipped on `dev`; protected monitored-service management is the active extension. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
+**Current phase: the event-ingestion, profiles, external-auth, managed API-key, tenant-isolation, monitored-service management, active uptime-monitor worker, and React operator-frontend foundation is shipped on `dev`; the profile-authenticated read-only uptime API is the active extension and is pending final repository gates/push. Application changes must be developed, validated, committed, and pushed only from `/home/lowery/the-watchtower` on `vm-work-dev-db`. Never push implementation commits directly to `main`; promote `dev` through an explicitly reviewed pull request.**
 
 When implementation is approved:
 
@@ -34,7 +34,7 @@ Before staging or committing, inspect `git status`, preserve any existing index 
 
 ## Product intent
 
-The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations through the frontend static server's same-origin `/api/*` forwarding. **`MonitoredService` is currently the deployed application/source identity used by events, API keys, and application-scoped role memberships; do not introduce a duplicate `applications` table or migrate ingestion references unless a later approved slice explicitly changes that boundary.** The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. Aggregation, uptime-state projection, alerting, and broader analytics can consume the event stream later.
+The Watchtower is a centralized, tenant-aware logging and uptime-observation control plane for the owner's other applications. Its JavaScript React frontend provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations through the frontend static server's same-origin `/api/*` forwarding. **`MonitoredService` is currently the deployed application/source identity used by events, API keys, and application-scoped role memberships; do not introduce a duplicate `applications` table or migrate ingestion references unless a later approved slice explicitly changes that boundary.** The external DB Management Auth API remains the browser identity authority; Watchtower lazily provisions one local profile per stable external subject UUID and uses that profile as the ownership root. Profile owners manage monitored services and digest-only machine API keys. Services submit event envelopes to a webhook through managed keys or an explicitly mapped legacy HMAC compatibility path. The API authenticates the profile and source, validates and deduplicates the envelope, persists the immutable event in PostgreSQL, and records an outbox message in the same transaction. This transactional outbox prevents acknowledged events from being lost between PostgreSQL and Kafka. The active uptime worker separately probes configured HTTPS endpoints and stores current state plus bounded check history. Alerting, event-stream projection, and broader analytics remain later work.
 
 The active tenant milestone extends the shipped vertical slice through this path:
 
@@ -110,12 +110,13 @@ The committed tenant/auth/frontend milestone adds:
 - Managed-key webhook ingestion plus a retained legacy HMAC path that is disabled unless each service slug has both a secret and explicit profile UUID mapping.
 - Transaction-time managed-key revalidation, duplicate-header rejection, and atomic `last_used_at` recording with accepted or duplicate event outcomes.
 - Origin checks for cookie-authenticated mutations; explicit bearer credentials take precedence and never fall back to cookies when malformed.
-- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, `0014_watchtower_permissions`, and `0015_api_key_application_rbac`.
-- A `watchtowersHouse` React/Vite frontend with Login, protected Home, and API Keys pages; API keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation.
-- The active extension adds a protected Monitored Services page with profile-owned create/list/edit/deactivate/reactivate operations.
+- Forward migrations `0005_profile`, `0006_tenant_ownership`, `0007_api_keys`, `0008_security_hardening`, `0009_webhook_rate_limit`, `0010_rate_limit_retention`, `0011_api_key_owner_restrict`, `0012_profile_auth_metadata`, `0013_watchtower_roles`, `0014_watchtower_permissions`, `0015_api_key_application_rbac`, `0016_uptime_monitoring`, and `0017_profile_uptime_keys`.
+- A `watchtowersHouse` React/Vite frontend with Login, protected Home, Monitored Services, Uptime Monitors, and API Keys pages. Service ingestion keys support safe listing, service-bound issuance, one-time secret disclosure, metadata rename, and irreversible revocation; the separate profile uptime panel supports singleton issue/reissue only.
+- Active HTTPS monitor polling runs in the private `uptime-worker`, stores latest state plus bounded check history, and exposes no host port.
+- The active extension adds exactly one route, `GET /api/v1/uptime`, authenticated by a profile-bound `wtp_v1_` key with `uptime:read`; service ingestion remains restricted to service-bound `wtk_v1_` keys with `events:write`.
 - Same-origin frontend-server forwarding where browser `/api/*` requests reach FastAPI over the Compose network; both the production server and Vite development server allow `dwatchtower.johnmgrubbs.io`, and `https://dwatchtower.johnmgrubbs.io` is trusted for cookie-authenticated mutations.
 
-Do not describe the active monitored-services extension as shipped until full tests, Ruff, strict mypy, dependency checks, Compose validation, runtime smoke tests, secret scans, and exact-diff reviews all pass and the implementation is committed and pushed to `dev`.
+Do not describe the profile uptime API extension as fully shipped until full repository tests, Ruff, strict mypy, dependency checks, Compose validation, runtime smoke tests, secret scans, exact-diff reviews, and the separately authorized push to `dev` are complete.
 
 Legacy HMAC signing secrets are supplied only through deployment configuration (`WATCHTOWER_WEBHOOK_SECRETS`) and require matching profile ownership in `WATCHTOWER_LEGACY_WEBHOOK_PROFILES`; neither secret is stored in PostgreSQL or Git. Managed raw API keys are disclosed once and never persisted. Kafka client selection and outbox publication remain gated on a real broker spike.
 
@@ -302,6 +303,16 @@ GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 
 External auth tokens remain browser-session credentials and are never stored in the Watchtower database. Successful login returns an empty `204` plus the HttpOnly cookie; only protected `GET /auth/me` returns current identity and profile metadata. Profile and ownership identity comes only from the stable external UUID, not mutable email, username, or display name. All service and key queries include `profile_id`; cross-profile access returns `404`. Raw managed keys are returned once with `Cache-Control: no-store`, never listed again, and never logged.
 
+### Profile uptime machine endpoint
+
+```text
+GET /api/v1/uptime
+```
+
+This is the only new route in the profile uptime slice. It requires exactly one `X-Watchtower-Profile-Key` header and never accepts a profile or service selector. Missing, duplicate, malformed, unknown, and superseded keys share the same generic `401`; a valid key for a suspended profile returns `403`; a depleted PostgreSQL-backed budget returns `429` with `Retry-After`. Successful responses use `Cache-Control: no-store`, include every service currently visible through `applications.read`, nest only active monitors, and expose latest state plus a fixed 24-hour rolling uptime percentage. History, custom windows, writes, pagination, public status pages, event payloads, role data, and key metadata are excluded. Callers must use TLS at a trusted ingress.
+
+The UI and existing `POST /api/v1/api-keys` issue or reissue the singleton profile uptime credential. Reissue preserves the row, immediately invalidates the previous token, and discloses the replacement once. Service ingestion keys remain service-bound `wtk_v1_`/`events:write` credentials; profile uptime keys are profile-bound `wtp_v1_`/`uptime:read` credentials and cannot authenticate ingestion.
+
 ## Persistence direction
 
 Use PostgreSQL schema `watchtower`.
@@ -316,7 +327,7 @@ Purpose: durable normalized human authorization metadata. PostgreSQL is the sour
 
 ### `api_key`
 
-Purpose: application-bound machine credential metadata with durable human creator history. Persist only key version, non-secret lookup prefix, fixed-length digest, required service binding for new keys, scopes, expiry/revocation/use timestamps, and audit metadata. `profile_id` identifies the human creator and restricts profile deletion; `service_id` is the authoritative machine source and tenant binding. PostgreSQL `api_keys.read` and `api_keys.manage` grants control human metadata access; key mutations and managed ingestion lock the application before authorization or any key-row lock so concurrent membership changes and revocation cannot race authorization or deadlock. Ingestion derives the service owner and slug from the key's database-bound service rather than the creator or request header. Revoked unbound legacy rows remain durable but cannot authenticate or appear in application-scoped lists. Never persist or log the raw token.
+Purpose: explicitly discriminated machine credential metadata with durable human creator history. Service ingestion credentials are service-bound; the singleton profile uptime credential is profile-bound and supports issue/reissue only. Persist only key kind/version, non-secret lookup prefix, fixed-length digest, binding, scopes, rotation/expiry/revocation/use timestamps, and audit metadata. `profile_id` identifies the human creator and restricts profile deletion; `service_id` is the authoritative machine source and tenant binding. PostgreSQL `api_keys.read` and `api_keys.manage` grants control human metadata access; key mutations and managed ingestion lock the application before authorization or any key-row lock so concurrent membership changes and revocation cannot race authorization or deadlock. Ingestion derives the service owner and slug from the key's database-bound service rather than the creator or request header. Revoked unbound legacy rows remain durable but cannot authenticate or appear in application-scoped lists. Never persist or log the raw token.
 
 ### `monitored_service`
 
@@ -362,9 +373,9 @@ Rules:
 
 ## Uptime interpretation
 
-For the first slice, uptime is passive: services emit `service.heartbeat` and lifecycle/error events. Later projection workers can calculate current status and uptime windows from the stream.
+Uptime monitoring is active and server-owned. Operators configure profile-authorized HTTPS monitors; the private `uptime-worker` claims due rows with PostgreSQL locking, performs bounded probes, stores latest state, retains bounded check history, and exposes no network port. The profile uptime API reads that state and calculates only the fixed rolling 24-hour window.
 
-Do not add active polling/scheduling until the owner answers whether Watchtower should also call external health URLs. If approved later, model checks as commands/events rather than embedding scheduler logic in webhook routes.
+Do not move scheduling into webhook or request routes, expose arbitrary history/custom windows, add public status pages, or couple alert delivery to this slice. Event-stream projection and alert delivery remain separate approved work.
 
 ## Security and data handling
 
@@ -408,7 +419,7 @@ Use real PostgreSQL for persistence integration tests; SQLite is not an acceptab
 - Alembic upgrades a fresh PostgreSQL database through the full migration head; authorized disposable downgrade/upgrade cycles preserve migration integrity.
 - Full backend and frontend tests, Ruff check/format, strict mypy, ESLint, Vite build, `pip check`, `npm audit`, Compose validation, migration parity, runtime smoke, tenant isolation, and secret scans pass.
 - The exact intended diff receives independent review, isolates intended frontend integration hunks from pre-existing unrelated work, is committed only on `dev`, and leaves `main` unchanged.
-- No active polling, production exposure, or unapproved analytics surface is introduced.
+- Active polling remains isolated to the private uptime worker; no production exposure, public status surface, custom analytics window, or alert delivery is introduced by the profile read API.
 
 ## Approved defaults and remaining gates
 
@@ -421,8 +432,8 @@ Implementation began with these owner-approved defaults and subsequent decisions
 5. Managed API keys are preferred for webhook ingestion; raw values are disclosed once and only digests are persisted.
 6. Legacy per-service HMAC remains only through explicit secret and profile mappings, with timestamp/replay protection.
 7. PostgreSQL enforces tenant ownership and the transactional outbox boundary before direct Kafka coupling.
-8. Passive heartbeat events precede active probes.
+8. Passive heartbeat events preceded the now-shipped private active HTTPS probe worker; request routes never run probes.
 9. Thirty-day proposed raw-event retention and a 256 KiB body limit.
 10. Development, commits, and pushes occur on `vm-work-dev-db`, branch `dev` only.
 
-Kafka broker/client selection, public/Tailscale exposure, production deployment, retention enforcement, and active uptime probes remain separate approval or spike gates.
+Kafka broker/client selection, public/Tailscale exposure, production deployment, raw-event retention enforcement, alert delivery, public status pages, and broader uptime analytics remain separate approval or spike gates.

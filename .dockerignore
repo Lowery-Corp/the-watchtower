@@ -12,4 +12,3 @@ __pycache__
 .ruff_cache
 htmlcov
 .coverage
-README.md
