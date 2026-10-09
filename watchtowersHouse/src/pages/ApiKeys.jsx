@@ -82,6 +82,10 @@ function copyWithLegacySelection(value) {
 function SecretDialog({ apiKey, onClose }) {
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState("");
+  const isProfileUptime = apiKey.credential_kind === "profile_uptime";
+  const dialogTitle = isProfileUptime
+    ? "Copy your Profile Uptime API key now"
+    : "Copy your API key now";
   const copySecret = async () => {
     setCopyError("");
     try {
@@ -97,10 +101,14 @@ function SecretDialog({ apiKey, onClose }) {
     }
   };
   return (
-    <Dialog label="Copy your API key now" onClose={onClose} initialFocusSelector="[data-copy-secret]" className="border-amber-300/20">
+    <Dialog label={dialogTitle} onClose={onClose} initialFocusSelector="[data-copy-secret]" className="border-amber-300/20">
       <p className="eyebrow">One-time disclosure</p>
-      <h2 className="mt-2 font-display text-2xl font-semibold text-white">Copy your API key now</h2>
-      <p className="mt-3 text-sm leading-6 text-slate-400">This secret will never be shown again. Store it in your service’s secret manager before closing this dialog.</p>
+      <h2 className="mt-2 font-display text-2xl font-semibold text-white">{dialogTitle}</h2>
+      <p className="mt-3 text-sm leading-6 text-slate-400">
+        {isProfileUptime
+          ? "This secret authenticates read-only profile uptime queries and will never be shown again. Store it securely before closing this dialog."
+          : "This secret will never be shown again. Store it in your service’s secret manager before closing this dialog."}
+      </p>
       <div className="mt-6 rounded-xl border border-amber-300/20 bg-slate-950 p-4"><code className="block break-all text-sm leading-6 text-amber-200">{apiKey.api_key}</code></div>
       <button type="button" data-copy-secret onClick={copySecret} className="secondary-button mt-4 w-full">{copied ? "Copied to clipboard" : "Copy secret"}</button>
       {copyError && <p role="alert" className="mt-3 text-sm text-red-300">{copyError}</p>}
@@ -176,6 +184,40 @@ function RevokeKeyDialog({ apiKey, onClose, onRevoked }) {
   );
 }
 
+function ReissueProfileKeyDialog({ onClose, onFailed, onIssued }) {
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleReissue = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const issued = await createApiKey({ credential_kind: "profile_uptime" });
+      onIssued(issued);
+    } catch (requestError) {
+      onFailed(getErrorMessage(requestError, "The profile uptime key could not be reissued."));
+    }
+  };
+
+  return (
+    <Dialog
+      labelledBy="reissue-profile-key-title"
+      onClose={onClose}
+      dismissible={!submitting}
+      initialFocusSelector="[data-reissue-profile-key]"
+    >
+      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-red-300">Credential rotation</p>
+      <h2 id="reissue-profile-key-title" className="mt-2 font-display text-2xl font-semibold text-white">Reissue Profile Uptime API key?</h2>
+      <p className="mt-3 text-sm leading-6 text-slate-400">The current key will be invalidated immediately. Any uptime client using it must be updated with the replacement secret.</p>
+      <div className="mt-6 flex justify-end gap-3">
+        <button type="button" disabled={submitting} onClick={onClose} className="secondary-button">Cancel</button>
+        <button type="button" data-reissue-profile-key onClick={handleReissue} disabled={submitting} className="danger-button">
+          {submitting ? "Reissuing…" : "Reissue key"}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
 export default function ApiKeys() {
   const [apiKeys, setApiKeys] = useState([]);
   const [services, setServices] = useState([]);
@@ -185,6 +227,9 @@ export default function ApiKeys() {
   const [disclosedKey, setDisclosedKey] = useState(null);
   const [keyBeingEdited, setKeyBeingEdited] = useState(null);
   const [keyPendingRevocation, setKeyPendingRevocation] = useState(null);
+  const [profileKeyIssuing, setProfileKeyIssuing] = useState(false);
+  const [profileKeyError, setProfileKeyError] = useState("");
+  const [confirmingProfileReissue, setConfirmingProfileReissue] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -203,11 +248,41 @@ export default function ApiKeys() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const servicesById = useMemo(() => new Map(services.map((service) => [service.id, service])), [services]);
+  const profileKey = useMemo(
+    () => apiKeys.find((apiKey) => apiKey.credential_kind === "profile_uptime") || null,
+    [apiKeys],
+  );
+  const serviceApiKeys = useMemo(
+    () => apiKeys.filter((apiKey) => apiKey.credential_kind === "service_ingestion"),
+    [apiKeys],
+  );
   const handleCreated = (created) => {
     const { api_key: secret, ...metadata } = created;
     setApiKeys((current) => [metadata, ...current]);
     setCreating(false);
     setDisclosedKey({ ...metadata, api_key: secret });
+  };
+  const handleProfileIssued = (issued) => {
+    const { api_key: secret, ...metadata } = issued;
+    setApiKeys((current) => [
+      metadata,
+      ...current.filter((apiKey) => apiKey.credential_kind !== "profile_uptime"),
+    ]);
+    setProfileKeyError("");
+    setProfileKeyIssuing(false);
+    setConfirmingProfileReissue(false);
+    setDisclosedKey({ ...metadata, api_key: secret });
+  };
+  const handleProfileIssue = async () => {
+    if (profileKeyIssuing) return;
+    setProfileKeyIssuing(true);
+    setProfileKeyError("");
+    try {
+      handleProfileIssued(await createApiKey({ credential_kind: "profile_uptime" }));
+    } catch (requestError) {
+      setProfileKeyError(getErrorMessage(requestError, "The profile uptime key could not be issued."));
+      setProfileKeyIssuing(false);
+    }
   };
   const handleRevoked = (apiKeyId) => {
     const revokedAt = new Date().toISOString();
@@ -236,8 +311,46 @@ export default function ApiKeys() {
           <button type="button" onClick={loadData} className="secondary-button mt-4">Retry</button>
         </div>
       )}
-      <section className="panel overflow-hidden" aria-label="API key registry">
-        {loading ? <div className="p-10 text-center text-sm text-slate-500" role="status">Loading credential registry…</div> : error ? <div className="p-10 text-center text-sm text-slate-500">Credential registry unavailable.</div> : apiKeys.length === 0 ? <div className="p-12 text-center"><p className="font-display text-xl font-semibold text-slate-200">No API keys issued</p><p className="mt-2 text-sm text-slate-500">Create a key to authenticate your first event source.</p></div> : (
+
+      <section className="panel p-6 sm:p-7" aria-label="Profile Uptime API">
+        <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-start">
+          <div>
+            <p className="eyebrow">Read-only profile access</p>
+            <h2 className="mt-2 font-display text-2xl font-semibold text-white">Profile Uptime API</h2>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">Use one profile credential to query uptime data for every service this profile can read.</p>
+          </div>
+          {!loading && !error && (profileKey ? (
+            <button type="button" onClick={() => { setProfileKeyError(""); setConfirmingProfileReissue(true); }} className="danger-button">
+              {profileKeyError ? "Retry reissue" : "Reissue key"}
+            </button>
+          ) : (
+            <button type="button" disabled={profileKeyIssuing} onClick={handleProfileIssue} className="primary-button">
+              {profileKeyIssuing ? "Issuing…" : profileKeyError ? "Retry issue key" : "Issue key"}
+            </button>
+          ))}
+        </div>
+        {loading ? (
+          <p className="mt-6 text-sm text-slate-500" role="status">Loading profile key…</p>
+        ) : error ? (
+          <p className="mt-6 text-sm text-slate-500">Profile key metadata unavailable.</p>
+        ) : profileKey ? (
+          <dl className="mt-6 grid gap-4 border-t border-white/10 pt-5 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div><dt className="text-slate-500">Safe prefix</dt><dd className="mt-1 font-mono text-slate-200">{profileKey.public_prefix}…</dd></div>
+            <div><dt className="text-slate-500">Created</dt><dd className="mt-1 text-slate-200">{formatDate(profileKey.created_at)}</dd></div>
+            <div><dt className="text-slate-500">Rotated</dt><dd className="mt-1 text-slate-200">{formatDate(profileKey.rotated_at)}</dd></div>
+            <div><dt className="text-slate-500">Last used</dt><dd className="mt-1 text-slate-200">{formatDate(profileKey.last_used_at)}</dd></div>
+          </dl>
+        ) : (
+          <div className="mt-6 border-t border-white/10 pt-5">
+            <p className="font-medium text-slate-200">Not issued</p>
+            <p className="mt-1 text-sm text-slate-500">Issue this key when a read-only uptime client is ready to connect.</p>
+          </div>
+        )}
+        {profileKeyError && <div role="alert" className="error-banner mt-5">{profileKeyError}</div>}
+      </section>
+
+      <section className="panel overflow-hidden" aria-label="Service API key registry">
+        {loading ? <div className="p-10 text-center text-sm text-slate-500" role="status">Loading credential registry…</div> : error ? <div className="p-10 text-center text-sm text-slate-500">Credential registry unavailable.</div> : serviceApiKeys.length === 0 ? <div className="p-12 text-center"><p className="font-display text-xl font-semibold text-slate-200">No API keys issued</p><p className="mt-2 text-sm text-slate-500">Create a service key to authenticate your first event source.</p></div> : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[860px] text-left text-sm">
               <thead className="border-b border-white/10 bg-white/[0.02] text-xs uppercase tracking-[0.14em] text-slate-500">
@@ -251,7 +364,7 @@ export default function ApiKeys() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {apiKeys.map((apiKey) => (
+                {serviceApiKeys.map((apiKey) => (
                   <tr key={apiKey.id} className="transition hover:bg-white/[0.025]">
                     <td className="px-5 py-4"><p className="font-medium text-slate-200">{apiKey.name}</p><p className="mt-1 font-mono text-xs text-slate-600">{apiKey.public_prefix}…</p></td>
                     <td className="px-5 py-4 font-mono text-xs text-slate-400">{apiKey.scopes.join(", ")}</td>
@@ -281,6 +394,16 @@ export default function ApiKeys() {
       </section>
 
       {creating && <CreateKeyDialog services={services} onClose={() => setCreating(false)} onCreated={handleCreated} />}
+      {confirmingProfileReissue && (
+        <ReissueProfileKeyDialog
+          onClose={() => setConfirmingProfileReissue(false)}
+          onFailed={(message) => {
+            setProfileKeyError(message);
+            setConfirmingProfileReissue(false);
+          }}
+          onIssued={handleProfileIssued}
+        />
+      )}
       {disclosedKey && <SecretDialog apiKey={disclosedKey} onClose={() => setDisclosedKey(null)} />}
       {keyBeingEdited && <EditKeyDialog apiKey={keyBeingEdited} onClose={() => setKeyBeingEdited(null)} onUpdated={handleUpdated} />}
       {keyPendingRevocation && <RevokeKeyDialog apiKey={keyPendingRevocation} onClose={() => setKeyPendingRevocation(null)} onRevoked={handleRevoked} />}

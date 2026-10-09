@@ -3,17 +3,40 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 
 class ApiKeyCreate(BaseModel):
-    """Request one events-write key bound to a machine source service."""
+    """Request a service-ingestion key or the singleton profile uptime key."""
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=100)
-    service_id: UUID
+    credential_kind: str = "service_ingestion"
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    service_id: UUID | None = Field(default=None, validate_default=True)
     expires_at: datetime | None = None
+
+    @field_validator("service_id")
+    @classmethod
+    def service_ingestion_requires_service(
+        cls, value: UUID | None, info: ValidationInfo
+    ) -> UUID | None:
+        if info.data.get("credential_kind") == "service_ingestion" and value is None:
+            raise PydanticCustomError("missing", "Field required")
+        return value
+
+    @model_validator(mode="after")
+    def validate_kind_fields(self) -> "ApiKeyCreate":
+        if self.credential_kind == "service_ingestion":
+            if self.name is None:
+                raise ValueError("Service ingestion keys require name")
+        elif self.credential_kind == "profile_uptime":
+            if any(value is not None for value in (self.name, self.service_id, self.expires_at)):
+                raise ValueError("Profile uptime key fields are managed by the server")
+        else:
+            raise ValueError("Unsupported credential kind")
+        return self
 
     @field_validator("expires_at")
     @classmethod
@@ -55,11 +78,13 @@ class ApiKeyRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    credential_kind: str
     name: str
     public_prefix: str
     scopes: list[str]
     service_id: UUID | None
     created_at: datetime
+    rotated_at: datetime | None
     expires_at: datetime | None
     last_used_at: datetime | None
     revoked_at: datetime | None

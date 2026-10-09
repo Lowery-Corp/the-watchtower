@@ -146,9 +146,30 @@ describe("browser authentication", () => {
     });
     listMonitoredServices.mockResolvedValue([{ id: "service-1", active: true }]);
     listApiKeys.mockResolvedValue([
-      { id: "key-1", revoked_at: null, expires_at: null },
-      { id: "key-2", revoked_at: "2026-07-20T23:30:00Z", expires_at: null },
-      { id: "key-3", revoked_at: null, expires_at: "2020-01-01T00:00:00Z" },
+      {
+        id: "key-1",
+        credential_kind: "service_ingestion",
+        revoked_at: null,
+        expires_at: null,
+      },
+      {
+        id: "key-2",
+        credential_kind: "service_ingestion",
+        revoked_at: "2026-07-20T23:30:00Z",
+        expires_at: null,
+      },
+      {
+        id: "key-3",
+        credential_kind: "service_ingestion",
+        revoked_at: null,
+        expires_at: "2020-01-01T00:00:00Z",
+      },
+      {
+        id: "profile-key",
+        credential_kind: "profile_uptime",
+        revoked_at: null,
+        expires_at: null,
+      },
     ]);
 
     render(

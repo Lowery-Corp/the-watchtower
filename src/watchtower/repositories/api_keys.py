@@ -44,7 +44,7 @@ async def get_api_key_by_id(
 
     statement = select(ApiKey).where(ApiKey.id == api_key_id)
     if for_update:
-        statement = statement.with_for_update()
+        statement = statement.with_for_update().execution_options(populate_existing=True)
     return (await session.scalars(statement)).one_or_none()
 
 
@@ -60,6 +60,31 @@ async def get_api_key_by_prefix(session: AsyncSession, *, public_prefix: str) ->
     return (
         await session.scalars(select(ApiKey).where(ApiKey.public_prefix == public_prefix))
     ).one_or_none()
+
+
+async def get_profile_uptime_key(
+    session: AsyncSession, *, profile_id: UUID, for_update: bool = False
+) -> ApiKey | None:
+    statement = select(ApiKey).where(
+        ApiKey.profile_id == profile_id,
+        ApiKey.credential_kind == "profile_uptime",
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return (await session.scalars(statement)).one_or_none()
+
+
+async def list_profile_uptime_keys(session: AsyncSession, *, profile_id: UUID) -> list[ApiKey]:
+    return list(
+        (
+            await session.scalars(
+                select(ApiKey).where(
+                    ApiKey.profile_id == profile_id,
+                    ApiKey.credential_kind == "profile_uptime",
+                )
+            )
+        ).all()
+    )
 
 
 async def list_authorized_api_keys(

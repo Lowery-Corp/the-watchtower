@@ -40,9 +40,13 @@ export default function Home() {
   useEffect(() => { loadData(); }, [loadData]);
 
   const activeServices = useMemo(() => services.filter((service) => service.active).length, [services]);
-  const activeKeys = useMemo(() => apiKeys.filter((key) => (
+  const serviceApiKeys = useMemo(
+    () => apiKeys.filter((key) => key.credential_kind === "service_ingestion"),
+    [apiKeys],
+  );
+  const activeKeys = useMemo(() => serviceApiKeys.filter((key) => (
     !key.revoked_at && (!key.expires_at || new Date(key.expires_at) > new Date())
-  )).length, [apiKeys]);
+  )).length, [serviceApiKeys]);
   const displayName = user?.display_name || user?.username || "operator";
 
   return (
@@ -63,7 +67,7 @@ export default function Home() {
         <section aria-label="Watchtower metrics" className="grid gap-4 md:grid-cols-3">
           <MetricCard label="Monitored services" value={loading ? "—" : activeServices} detail={`${services.length} registered total`} accent="green" />
           <MetricCard label="Active API keys" value={loading ? "—" : activeKeys} detail="Usable ingestion credentials" />
-          <MetricCard label="Total API keys" value={loading ? "—" : apiKeys.length} detail="Includes expired and revoked keys" accent="blue" />
+          <MetricCard label="Total API keys" value={loading ? "—" : serviceApiKeys.length} detail="Includes expired and revoked keys" accent="blue" />
         </section>
       )}
 

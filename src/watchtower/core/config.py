@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     max_webhook_body_bytes: int = Field(default=256 * 1024, ge=1024, le=10 * 1024 * 1024)
     webhook_rate_limit_requests: int = Field(default=60, ge=1, le=100_000)
     webhook_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    uptime_api_rate_limit_requests: int = Field(default=60, ge=1, le=100_000)
+    uptime_api_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     uptime_check_interval_seconds: int = Field(default=60, ge=10, le=86_400)
     uptime_check_timeout_seconds: float = Field(default=10.0, gt=0, le=30)
     uptime_worker_batch_size: int = Field(default=50, ge=1, le=1000)

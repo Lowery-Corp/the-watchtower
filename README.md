@@ -1,6 +1,6 @@
 # The Watchtower
 
-Full-stack tenant-aware event logging and uptime monitoring control plane. Its JavaScript React operator UI provides browser login, profile-aware Home metrics, monitored-service lifecycle management, and managed API-key operations over the existing external authentication, local profiles, authenticated event ingestion, immutable PostgreSQL history, transactional outbox, and Alembic-managed schema.
+Full-stack tenant-aware event logging and uptime monitoring control plane. Its JavaScript React operator UI provides browser login, profile-aware Home metrics, monitored-service and active uptime-monitor management, managed API-key operations, and profile uptime-key issue/reissue over the existing external authentication, local profiles, authenticated event ingestion, immutable PostgreSQL history, transactional outbox, and Alembic-managed schema.
 
 ## Runtime architecture
 
@@ -9,7 +9,8 @@ browser --> frontend static server :5174
    |              |
    |              +--> /api/* --> FastAPI (loopback :8001) --stable auth UUID--> local profile
    |                                     |
-machine --managed API key----------------+--> profile-scoped transaction
+machine --service key (`wtk_v1_`)--------+--> profile-scoped transaction
+profile client --uptime key (`wtp_v1_`)---+--> read-only current uptime
 legacy ----mapped HMAC--------------------+       |--> immutable PostgreSQL event
                                                  +--> Kafka-ready outbox row
 ```
@@ -21,6 +22,7 @@ Compose runs:
 - `db`: PostgreSQL 17 with a persistent named volume and loopback-only host port `5433` by default.
 - `migrate`: one-shot `alembic upgrade head` service.
 - `api`: non-root FastAPI/uvicorn runtime published on host-loopback port `8001` by default; remote clients must use a trusted TLS ingress.
+- `uptime-worker`: private active-probe worker started after migrations; it claims due monitors, records bounded check history, and exposes no host port.
 - `frontend`: non-root Node static runtime serving the built Vite bundle on host port `5174` by default; it forwards `/api/*` to the API service over the Compose network and rejects request bodies over 256 KiB by default.
 - `frontend-tools`: profile-gated Node image containing frontend tests, lint, build, and audit tooling.
 - `test`: profile-gated image containing the test, lint, and type-check tools.
@@ -48,8 +50,9 @@ The application reads `WATCHTOWER_`-prefixed settings. Never commit `.env`.
 - `WATCHTOWER_SESSION_COOKIE_SECURE` is `false` only for local HTTP development. Set it to `true` behind production HTTPS.
 - `WATCHTOWER_WEBHOOK_SECRETS` is a JSON object mapping legacy service slugs to HMAC secrets.
 - `WATCHTOWER_LEGACY_WEBHOOK_PROFILES` is a JSON object mapping every enabled legacy slug to its owning profile UUID. A secret without an explicit profile mapping cannot authenticate.
+- `WATCHTOWER_UPTIME_API_RATE_LIMIT_REQUESTS` and `WATCHTOWER_UPTIME_API_RATE_LIMIT_WINDOW_SECONDS` bound the profile uptime API budget. Both default to `60`, allowing 60 successful authenticated requests per 60-second window.
 
-Managed API keys are created through the authenticated API. Watchtower returns the raw key once with `Cache-Control: no-store`, then stores only a version, non-secret lookup prefix, and domain-separated SHA-256 verifier. Lost keys cannot be recovered; create a replacement and revoke the old metadata row. Service binding and scopes are immutable, revocation is permanent, and ordinary updates cannot extend or remove an expiry.
+Managed API keys are created through the authenticated API. Service ingestion keys are service-bound `wtk_v1_` credentials with the sole `events:write` scope; profile uptime keys are profile-bound `wtp_v1_` credentials with the sole `uptime:read` scope. The credential formats and digest domains are intentionally distinct. Watchtower returns a raw key once with `Cache-Control: no-store`, then stores only a version, non-secret lookup prefix, and domain-separated SHA-256 verifier. Lost service keys must be replaced and revoked. A profile uptime key instead supports issue/reissue only: reissue preserves its metadata row, immediately invalidates the old token, and discloses the replacement once.
 
 The default signature freshness window is 300 seconds and the default maximum raw webhook body is 262,144 bytes (256 KiB). The application enforces a shared PostgreSQL-backed budget of 60 successfully authenticated requests per managed key or mapped legacy sender per 60-second window. Managed bearer keys require TLS at or before a trusted production edge; the Compose API listener is HTTP and must not be exposed directly to an untrusted network.
 
@@ -59,7 +62,7 @@ The default signature freshness window is 300 seconds and the default maximum ra
 cd /home/lowery/the-watchtower
 docker compose config -q
 docker compose --profile test build
-docker compose up -d --build db api frontend
+docker compose up -d --build db api uptime-worker frontend
 docker compose ps
 ```
 
@@ -103,6 +106,17 @@ GET/PATCH/DELETE /api/v1/api-keys/{api_key_id}
 All identity, service, and API-key information routes require a validated session cookie or explicit bearer credential. All resource lookups and mutations are profile-scoped; anonymous requests return `401`, and cross-profile object probes return `404`. Cookie-authenticated POST, PATCH, and DELETE requests require one exact trusted `Origin`.
 
 The protected React route `/services` provides create, list, edit, deactivate, and reactivate controls. Service slugs are immutable webhook identities; display name, environment, and active state are mutable. `DELETE` on a service deactivates it while retaining historical events. `DELETE` on an API key means irreversible soft revocation. A key creation response is the only response containing raw key material.
+
+## Profile uptime API
+
+```text
+GET /api/v1/uptime
+X-Watchtower-Profile-Key: wtp_v1_<prefix>.<secret>
+```
+
+Issue or reissue the singleton profile uptime key from the existing **API Keys** page. The raw replacement is disclosed once, and successful reissue immediately invalidates the previous token. Integrations must use TLS and never send a profile ID; authorization is derived from the profile-bound key and current `applications.read` grants. Missing, malformed, unknown, and superseded keys share one generic `401`; suspended profiles receive `403`; exhausted budgets receive `429` with `Retry-After`.
+
+The response contains current/latest state and a fixed 24-hour rolling uptime percentage for active monitors under every readable service. History, custom windows, writes, public status pages, and pagination are excluded from this contract. See [`docs/profile-uptime-api.md`](docs/profile-uptime-api.md) for issue/reissue, request/response, TLS, errors, limits, and scope details.
 
 ## Event ingestion
 
